@@ -6,42 +6,49 @@ on:
   push:
     branches:
       - main
-    paths:
-      - '!README.md'
 
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
 
     steps:
     - uses: actions/checkout@v4
-
-    - name: install dependencies
-      run: sudo apt-get update && sudo apt-get install -y llvm-14 clang-14 libc++-14-dev libc++abi-14-dev python3-minimal libz3-dev libgoogle-perftools-dev libboost-container-dev python3-dev
-    #   run: |
-    #     wget https://apt.llvm.org/llvm.sh
-    #     chmod +x llvm.sh
-    #     sudo ./llvm.sh 12 all
-
-    - name: get aflpp
-      uses: actions/checkout@v4
+    - uses: nixbuild/nix-quick-install-action@v30
+    - name: Restore Nix store
+      id: cache-nix-restore
+      uses: nix-community/cache-nix-action/restore@v6
       with:
-        repository: AFLplusplus/AFLplusplus
-        path: ${{ github.workspace }}/aflpp
+        # restore and save a cache using this key
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+        # if there's no cache hit, restore a cache by this prefix
+        restore-prefixes-first-match: nix-${{ runner.os }}-
 
-    - name: configure
-      run: CC=clang-14 CXX=clang++-14 cmake -B ${{ github.workspace }}/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install -DAFLPP_PATH=${{ github.workspace }}/aflpp
+    - name: build and test
+      run: nix build -L
+      timeout-minutes: 5
 
-    - name: build
-      run: CC=clang-14 CXX=clang++-14 cmake --build ${{ github.workspace }}/build
-
-    - name: install
-      run: CC=clang-14 CXX=clang++-14 cmake --install ${{ github.workspace }}/build
-
-    - name: install lit
-      run: pip install lit
-
-    - name: test
-      run: lit --verbose tests
-      working-directory: ${{ github.workspace }}/build
+    - name: Save Nix store
+      id: cache-nix-save
+      if: always() && steps.cache-nix-restore.outputs.hit-primary-key != 'true'
+      uses: nix-community/cache-nix-action/save@v6
+      with:
+        # restore and save a cache using this key
+        primary-key: ${{ steps.cache-nix-restore.outputs.primary-key }}
+        # collect garbage until the Nix store size (in bytes) is at most this number
+        # before trying to save a new cache
+        # 1G = 1073741824
+        gc-max-store-size-linux: 1G
+        # do purge caches
+        purge: true
+        # purge all versions of the cache
+        purge-prefixes: build-${{ runner.os }}-
+        # created more than 0 seconds ago relative to the start of the `Post Restore` phase
+        purge-created: 0
+        # except the version with the `primary-key`, if it exists
+        purge-primary-key: never
+        # and collect garbage in the Nix store until it reaches this size in bytes
+        gc-max-store-size: 0

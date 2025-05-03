@@ -1,5 +1,7 @@
 include(CompilerRTUtils)
 
+find_package (Python3 COMPONENTS Interpreter)
+
 set(SANITIZER_GEN_DYNAMIC_LIST
   ${COMPILER_RT_SOURCE_DIR}/sanitizer_common/scripts/gen_dynamic_list.py)
 
