@@ -7,6 +7,8 @@ int main(){
         return 4;
     }
     argc -= '0';
+    argc++;
+    argc++;
     printf("Read from stdin: %d\n", (int)(argc));
     int ret = 0;
     if(argc == 1){

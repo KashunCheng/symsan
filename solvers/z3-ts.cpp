@@ -873,6 +873,7 @@ Z3ParserSolver::solve_task(uint64_t task_id, unsigned timeout, solution_t &solut
     // solve the first constraint (optimistic)
     z3::expr e = task->at(0);
     solver.add(e);
+    printf("[optimistic]: %s\n", solver.to_smt2().c_str());
     z3::check_result res = solver.check();
     if (res == z3::sat) {
       ret = opt_sat;
@@ -885,6 +886,7 @@ Z3ParserSolver::solve_task(uint64_t task_id, unsigned timeout, solution_t &solut
         for (size_t i = 1; i < task->size(); i++) {
           solver.add(task->at(i));
         }
+        printf("[nested]: %s\n", solver.to_smt2().c_str());
         res = solver.check();
         if (res == z3::sat) {
           ret = nested_sat;

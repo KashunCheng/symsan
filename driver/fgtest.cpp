@@ -125,7 +125,14 @@ struct GTStep {
   bool is_true;
 };
 
+struct GTBranchStats {
+  uint32_t seen_true = 0;
+  uint32_t seen_false = 0;
+};
+
 static bool target_reached = false;
+static std::unordered_map<int, GTBranchStats> gt_branch_stats;
+static uint32_t target_runs = 0;
 static std::vector<GTStep> ground_truth_path;
 
 static const char *pipe_msg_type_str(uint16_t msg_type) {
@@ -163,6 +170,7 @@ static std::string pipe_msg_flags_str(const pipe_msg &msg) {
       if (msg.flags & F_MEMERR_UBI) push_flag("ubi");
       if (msg.flags & F_MEMERR_NULL) push_flag("null");
       if (msg.flags & F_MEMERR_FREE) push_flag("double_free");
+      if (msg.flags & F_TARGET_HIT) push_flag("target_hit");
       break;
     default:
       break;
@@ -603,6 +611,7 @@ int main(int argc, char* const argv[]) {
     seed_queue.pop_front();
     ++seeds_processed;
     std::vector<ObservedCond> run_conds;
+    bool run_target_hit = false;
 
     // write seed to temp file
     char tmp_path[PATH_MAX];
@@ -718,6 +727,11 @@ int main(int argc, char* const argv[]) {
           __z3_parser->record_memcmp(msg.label, mmsg->content, msg.result);
           free(mmsg);
           break;
+        case memerr_type:
+          if (msg.flags & F_TARGET_HIT) {
+            run_target_hit = true;
+          }
+          break;
         case fsize_type:
           break;
         default:
@@ -725,22 +739,24 @@ int main(int argc, char* const argv[]) {
       }
     }
 
-    // Build ground truth path candidate from this run
-    if (!run_conds.empty()) {
-      std::unordered_map<int, bool> seen;
+    if (run_target_hit) {
+      target_reached = true;
+      ++target_runs;
+
+      std::unordered_map<int, bool> run_line_dir;
+      run_line_dir.reserve(run_conds.size());
+
       for (auto &rc : run_conds) {
-        auto it = symSanId_to_line.find(rc.symSanId);
-        if (it == symSanId_to_line.end()) continue;
-        seen[it->second] = rc.result;
+        auto itLine = symSanId_to_line.find(rc.symSanId);
+        if (itLine == symSanId_to_line.end()) continue;
+        int line = itLine->second;
+        run_line_dir[line] = rc.result;
       }
-      std::vector<GTStep> candidate;
-      candidate.reserve(seen.size());
-      for (auto &kv : seen) {
-        candidate.push_back({kv.first, kv.second});
-      }
-      if (!candidate.empty() && (!target_reached || candidate.size() > ground_truth_path.size())) {
-        ground_truth_path = std::move(candidate);
-        target_reached = true;
+
+      for (auto &kv : run_line_dir) {
+        auto &st = gt_branch_stats[kv.first];
+        if (kv.second) st.seen_true++;
+        else st.seen_false++;
       }
     }
 
@@ -749,6 +765,23 @@ int main(int argc, char* const argv[]) {
     input_size = 0;
     close(fd);
     current_seed = nullptr;
+  }
+
+  // Consolidate ground truth path from all target-reaching runs
+  ground_truth_path.clear();
+  if (target_reached && target_runs > 0) {
+    ground_truth_path.reserve(gt_branch_stats.size());
+    for (auto &kv : gt_branch_stats) {
+      int line = kv.first;
+      const auto &st = kv.second;
+      if (st.seen_true > 0 && st.seen_false == 0) {
+        ground_truth_path.push_back({line, true});
+      } else if (st.seen_false > 0 && st.seen_true == 0) {
+        ground_truth_path.push_back({line, false});
+      }
+    }
+    std::sort(ground_truth_path.begin(), ground_truth_path.end(),
+              [](const GTStep &a, const GTStep &b) { return a.line < b.line; });
   }
 
   if (reward_mode) {

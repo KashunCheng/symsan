@@ -5,14 +5,14 @@
       "answer": "reachable",
       "steps": [
         { "line": 6,  "dir": "F" },
-        { "line": 12, "dir": "F" },
-        { "line": 14, "dir": "F" }
+        { "line": 14, "dir": "F" },
+        { "line": 16, "dir": "F" }
       ]
     },
     {
       "answer": "reachable",
       "steps": [
-        { "line": 14, "dir": "F" }
+        { "line": 16, "dir": "F" }
       ]
     },
     {

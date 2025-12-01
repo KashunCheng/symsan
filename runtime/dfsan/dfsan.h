@@ -266,6 +266,7 @@ enum undefined_check_ids {
 #define F_MEMERR_UBI  0x8
 #define F_MEMERR_NULL 0x10
 #define F_MEMERR_FREE 0x20 // double free
+#define F_TARGET_HIT  0x40
 
 struct pipe_msg {
   uint16_t msg_type;

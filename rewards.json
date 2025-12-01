@@ -1,0 +1,34 @@
+{
+  "rewards": [
+    {
+      "answer": "reachable",
+      "f1": 0.8,
+      "precision": 0.6666666666666666,
+      "provided_steps": 2,
+      "recall": 1.0,
+      "reward": 0.91,
+      "solver_sat": true,
+      "solver_unknown": false
+    },
+    {
+      "answer": "reachable",
+      "f1": 0.6666666666666666,
+      "precision": 1.0,
+      "provided_steps": 1,
+      "recall": 0.5,
+      "reward": 0.8833333333333333,
+      "solver_sat": true,
+      "solver_unknown": false
+    },
+    {
+      "answer": "unreachable",
+      "f1": 0.0,
+      "precision": 0.0,
+      "provided_steps": 0,
+      "recall": 0.0,
+      "reward": -0.6,
+      "solver_sat": false,
+      "solver_unknown": false
+    }
+  ]
+}

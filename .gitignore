@@ -19,3 +19,4 @@ auto/
 /libcxx/
 !/libcxx/build_taint/lib/
 /install
+out/

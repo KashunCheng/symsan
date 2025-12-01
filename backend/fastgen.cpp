@@ -400,6 +400,26 @@ __taint_trace_memerr(dfsan_label ptr_label, uptr ptr, dfsan_label size_label,
   }
 }
 
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void symsan_target_hit(void *addr) {
+  if (__pipe_fd < 0)
+    return;
+
+  pipe_msg msg = {
+      .msg_type = memerr_type,
+      .flags = F_TARGET_HIT,
+      .instance_id = __instance_id,
+      .addr = (uptr)addr,
+      .context = __taint_trace_callstack,
+      .id = 0,
+      .label = 0,
+      .result = 0,
+  };
+
+  if (internal_write(__pipe_fd, &msg, sizeof(msg)) < 0) {
+    Die();
+  }
+}
+
 extern "C" void InitializeSolver() {
   __instance_id = flags().instance_id;
   __session_id = flags().session_id;

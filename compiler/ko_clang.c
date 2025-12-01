@@ -252,6 +252,18 @@ static void add_taint_pass() {
     cc_params[cc_par_cnt++] = "-symsan-ctwm-disable-bb-trace";
   }
 
+  const char *target_line = getenv("KO_TARGET_LINE");
+  if (target_line && *target_line) {
+    cc_params[cc_par_cnt++] = "-mllvm";
+    cc_params[cc_par_cnt++] = alloc_printf("-symsan-target-line=%s", target_line);
+  }
+
+  const char *target_file = getenv("KO_TARGET_FILE");
+  if (target_file && *target_file) {
+    cc_params[cc_par_cnt++] = "-mllvm";
+    cc_params[cc_par_cnt++] = alloc_printf("-symsan-target-file=%s", target_file);
+  }
+
   if (is_cxx && use_native_cxx) {
     cc_params[cc_par_cnt++] = "-mllvm";
     cc_params[cc_par_cnt++] =

@@ -4,6 +4,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #define DEBUG_TYPE "ctwm-index"
 
 #include "llvm/IR/BasicBlock.h"
@@ -13,6 +14,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Casting.h"
@@ -63,6 +65,16 @@ cl::opt<bool> ClCTWMDisableBBTrace(
     cl::desc(
         "Disable CTWM basic block trace instrumentation regardless of build default"),
     cl::Hidden, cl::init(false));
+
+cl::opt<std::string> ClTargetFile(
+    "symsan-target-file",
+    cl::desc("Absolute or base filename of the target location to mark as reached"),
+    cl::Hidden, cl::init(""));
+
+cl::opt<unsigned> ClTargetLine(
+    "symsan-target-line",
+    cl::desc("Line number of the target location to mark as reached"),
+    cl::Hidden, cl::init(0));
 
 struct BasicBlockRecord {
   uint32_t Id = 0;
@@ -157,6 +169,30 @@ std::string buildFilePath(const DIFile *File) {
     return std::string(Combined.str());
   }
   return std::string(Path.str());
+}
+
+bool hasTargetLocation() { return ClTargetLine != 0; }
+
+bool matchesTargetLocation(const DebugLoc &DL) {
+  if (!hasTargetLocation())
+    return false;
+  if (!DL || DL.getLine() != ClTargetLine)
+    return false;
+
+  if (ClTargetFile.empty())
+    return true;
+
+  const DILocation *Loc = DL.get();
+  const DIScope *Scope =
+      Loc ? dyn_cast_or_null<DIScope>(Loc->getScope()) : nullptr;
+  const DIFile *File = Scope ? Scope->getFile() : nullptr;
+  std::string Path = buildFilePath(File);
+  if (Path.empty())
+    return false;
+
+  if (Path == ClTargetFile)
+    return true;
+  return sys::path::filename(Path) == sys::path::filename(ClTargetFile);
 }
 
 void fillSourceInfo(const BranchInst &Br, BranchRecord &Record) {
@@ -436,6 +472,66 @@ bool instrumentBasicBlocks(Module &M,
   return Changed;
 }
 
+bool instrumentTargetHit(Module &M) {
+  if (!hasTargetLocation())
+    return false;
+
+  LLVMContext &Ctx = M.getContext();
+  FunctionCallee TargetFn = M.getOrInsertFunction(
+      "symsan_target_hit",
+      FunctionType::get(Type::getVoidTy(Ctx),
+                        {Type::getInt8PtrTy(Ctx)}, false));
+  if (Function *Fn = dyn_cast<Function>(TargetFn.getCallee())) {
+    Fn->setDoesNotThrow();
+    Fn->addFnAttr(Attribute::NoUnwind);
+    Fn->addFnAttr(Attribute::NoInline);
+  }
+
+  Function *ReturnAddr = Intrinsic::getDeclaration(&M, Intrinsic::returnaddress);
+  bool Changed = false;
+  SmallPtrSet<const BasicBlock *, 8> Instrumented;
+
+  for (Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    if (F.getName() == "symsan_target_hit")
+      continue;
+
+    for (BasicBlock &BB : F) {
+      Instruction *InsertPt = nullptr;
+      for (Instruction &I : BB) {
+        if (matchesTargetLocation(I.getDebugLoc())) {
+          InsertPt = &I;
+          break;
+        }
+      }
+
+      if (!InsertPt)
+        continue;
+      if (!Instrumented.insert(&BB).second)
+        continue;
+
+      IRBuilder<> IRB(InsertPt);
+      Value *Addr = nullptr;
+      if (ReturnAddr) {
+        Addr = IRB.CreateCall(ReturnAddr, {IRB.getInt32(0)});
+      } else {
+        Addr = ConstantPointerNull::get(Type::getInt8PtrTy(Ctx));
+      }
+      CallInst *Call = IRB.CreateCall(TargetFn, {Addr});
+      Call->setTailCallKind(CallInst::TCK_NoTail);
+      Changed = true;
+    }
+  }
+
+  if (!Changed && isDebugLoggingEnabled()) {
+    errs() << "CTWMIndexPass: target location " << ClTargetFile << ":"
+           << ClTargetLine << " not found\n";
+  }
+
+  return Changed;
+}
+
 } // namespace
 
 namespace symsan {
@@ -459,6 +555,7 @@ CTWMIndexPass::run(Module &M, ModuleAnalysisManager &MAM) {
 
   bool ChangedIR = false;
   writeIndexJSON(M, BlockRecords, BranchRecords, Groups);
+  ChangedIR |= instrumentTargetHit(M);
   ChangedIR |= instrumentBasicBlocks(M, IdMapping);
 
   if (ChangedIR)
