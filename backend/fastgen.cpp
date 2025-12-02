@@ -166,6 +166,7 @@ __taint_trace_switch_end(uint32_t cid) {
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint32_t cid) {
+  AOUT("trace_cond: label=%u, r=%d, flag=%d, cid=%d\n", label, (int)(r), int(flag), int(cid));
   if (label == 0) {
     // check for real loop exit
     if (!(((flag & FalseBranchLoopExit) && !r) ||

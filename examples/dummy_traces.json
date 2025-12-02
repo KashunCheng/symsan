@@ -1,10 +1,10 @@
 {
-  "target": { "file": "dummy.c", "line": 17 },
+  "target": { "file": "dummy.c", "line": 19 },
   "traces": [
     {
       "answer": "reachable",
       "steps": [
-        { "line": 6,  "dir": "F" },
+        { "line": 6, "dir": "F" },
         { "line": 14, "dir": "F" },
         { "line": 16, "dir": "F" }
       ]
@@ -12,7 +12,7 @@
     {
       "answer": "reachable",
       "steps": [
-        { "line": 16, "dir": "F" }
+        { "line": 6, "dir": "F" }
       ]
     },
     {

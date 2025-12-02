@@ -20,3 +20,8 @@ auto/
 !/libcxx/build_taint/lib/
 /install
 out/
+examples/*
+!examples/*.sh
+!examples/*.c
+!examples/*traces.json
+!examples/seed.bin

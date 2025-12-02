@@ -7,6 +7,7 @@ cd /work/symsan/ && mkdir -p build && \
 
 Then run
 ```
+cd examples
 bash dummy_build.sh
 bash dummy_reward.sh
 ```
