@@ -2,7 +2,7 @@
 set -euo pipefail
 
 symbol="symsan_target_hit"
-file="./dummy"
+file="./control_temp"
 
 if ! nm -gU "$file" | grep -q "$symbol"; then
     echo "symbol not found"
@@ -10,4 +10,4 @@ if ! nm -gU "$file" | grep -q "$symbol"; then
 fi
 mkdir -p out
 export TAINT_OPTIONS="output_dir=out:taint_file=stdin:debug=1"
-../build/bin/fgtest ./dummy seed.bin ctwm_index.json dummy_traces.json rewards.json
+../build/bin/fgtest ./control_temp "1 1 11 1" ctwm_index.json control_temp_traces.json rewards.json
