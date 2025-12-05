@@ -1,10 +1,8 @@
-version: '3.8'
-
 services:
   web-service:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: web-service/Dockerfile
     ports:
       - "11000:8000"
     volumes:

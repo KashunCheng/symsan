@@ -56,7 +56,7 @@ async def submit_task(
     
     接收上传的文件和 seed 字符串（直接写入目标程序 stdin），启动后台执行任务
     - seed: 任何字符串，原样写入 stdin（如 "0x1a1d" 会按字符写入），默认 "0402"
-    - branch_meta: 可选，不上传则使用 bin/{program}_ctwm_index.json
+    - branch_meta: 可选，不上传则使用 bin/{program}_ctwm_index.json（若不存在则回退到 bin/ctwm_index.json）
     - traces: 必需的轨迹 JSON 文件
     """
     # 验证程序选择
@@ -78,18 +78,25 @@ async def submit_task(
         # seed 参数直接作为字符串传递，fgtest 会将其写入目标 stdin
         seed_input = seed if seed else "0402"
         
-        # 处理 branch_meta：如果用户上传了就用上传的，否则使用默认路径
+        # 处理 branch_meta：如果用户上传了就用上传的，否则优先使用 {program}_ctwm_index.json，不存在则回退到通用 ctwm_index.json
         if branch_meta and branch_meta.filename:
             # 用户上传了 branch_meta 文件
             branch_meta_path = (task_dir / "branch_meta.json").resolve()
             with open(branch_meta_path, "wb") as f:
                 f.write(await branch_meta.read())
         else:
-            # 使用默认的 {program}_ctwm_index.json
-            default_meta_path = (BIN_DIR / f"{program}_ctwm_index.json").resolve()
+            # 先尝试 program 专用的 {program}_ctwm_index.json，不存在则回退
+            program_meta_path = (BIN_DIR / f"{program}_ctwm_index.json").resolve()
+            default_meta_path = (BIN_DIR / "ctwm_index.json").resolve()
+            if program_meta_path.exists():
+                branch_meta_path = program_meta_path
+            elif default_meta_path.exists():
+                branch_meta_path = default_meta_path
+            else:
+                raise HTTPException(status_code=500, detail=f"Default branch metadata not found: {program_meta_path} or {default_meta_path}")
             if not default_meta_path.exists():
-                raise HTTPException(status_code=500, detail=f"Default branch metadata not found: {default_meta_path}")
-            branch_meta_path = default_meta_path
+                # 记录提示，仍然继续使用 fallback
+                pass
         
         # 保存 traces 文件
         traces_path = (task_dir / "traces.json").resolve()
