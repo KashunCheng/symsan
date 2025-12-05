@@ -4,6 +4,14 @@
 		"dockerfile": "Dockerfile",
 		"context": "."
 	},
+
+	// Enable Docker-outside-of-Docker
+	"features": {
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+			"moby": false,
+			"installDockerBuildx": true
+		}
+	},
 	
 	// Workspace folder after container creation
 	"workspaceFolder": "/workspaces/symsan",
@@ -53,10 +61,7 @@
 	// Use vscode user
 	"remoteUser": "vscode",
 	
-	// Mount options
-	"mounts": [
-		"source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
-	],
+
 	
 	// Container privilege settings (for debugger and other tools)
 	"runArgs": [

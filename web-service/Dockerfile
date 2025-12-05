@@ -31,7 +31,8 @@ RUN mkdir -p /appdata/bin
 COPY --from=symsan-builder /work/symsan/build/bin/fgtest /appdata/bin/fgtest
 COPY --from=symsan-builder /work/symsan/examples/dummy /appdata/bin/dummy
 COPY --from=symsan-builder /work/symsan/examples/xor /appdata/bin/xor
-COPY --from=symsan-builder /work/symsan/examples/ctwm_index.json /appdata/bin/ctwm_index.json
+COPY --from=symsan-builder /work/symsan/examples/control_temp /appdata/bin/control_temp
+COPY --from=symsan-builder /work/symsan/examples/*_ctwm_index.json /appdata/bin/
 
 COPY web-service/app.py web-service/fgtest_wrapper.py ./
 COPY web-service/bin ./bin

@@ -26,6 +26,7 @@ RUN cd /work/symsan/ && mkdir -p build && \
 
 # Build example binaries (dummy, xor) so downstream images can copy them directly.
 RUN cd /work/symsan/examples && \
-    chmod +x dummy_build.sh xor_build.sh && \
+    chmod +x dummy_build.sh xor_build.sh control_temp.sh && \
     ./dummy_build.sh && \
+    ./control_temp.sh && \
     ./xor_build.sh
