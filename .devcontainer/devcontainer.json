@@ -5,11 +5,17 @@
 		"context": "."
 	},
 
-	// Enable Docker-outside-of-Docker
+	// Enable Docker-outside-of-Docker with official Docker CLI
 	"features": {
 		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
 			"moby": false,
-			"installDockerBuildx": true
+			"installDockerBuildx": true,
+			"dockerDashComposeVersion": "v2"
+		},
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {
+			"installDockerBuildx": true,
+			"installDockerComposeSwitch": true,
+			"dockerDashComposeVersion": "v2"
 		}
 	},
 	

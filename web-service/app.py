@@ -60,7 +60,7 @@ async def submit_task(
     - traces: 必需的轨迹 JSON 文件
     """
     # 验证程序选择
-    if program not in ["dummy", "xor"]:
+    if program not in ["dummy", "xor", "control_temp"]:
         raise HTTPException(status_code=400, detail="Program must be 'dummy' or 'xor'")
     
     task_id = str(uuid.uuid4())[:8]
