@@ -9,7 +9,9 @@ set -euo pipefail
 #   NO_CACHE           - Disable cache for all builds (set to any non-empty value)
 #   NO_CACHE_WEB       - Disable cache only for web-service image
 #   SKIP_BUILDER       - Skip building the builder image (use existing)
-#   BUILDX_BUILDER     - Use a specific buildx builder
+#   USE_DEFAULT_BUILDER - Use default docker builder instead of buildx (default: 1)
+#                        Set to empty to use buildx (may have issues with local images)
+#   BUILDX_BUILDER     - Use a specific buildx builder (implies buildx mode)
 #   BUILDX_PROGRESS    - Progress output type (default: auto)
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,18 +24,23 @@ BUILDX_PROGRESS="${BUILDX_PROGRESS:-auto}"
 NO_CACHE="${NO_CACHE:-}"
 NO_CACHE_WEB="${NO_CACHE_WEB:-}"
 SKIP_BUILDER="${SKIP_BUILDER:-}"
+# Use default docker builder to access local images (not a container-based buildx builder)
+USE_DEFAULT_BUILDER="${USE_DEFAULT_BUILDER:-1}"
 
 buildx() {
   local no_cache_flag="$1"
   shift
-  local args=(
-    buildx build
-    --progress="${BUILDX_PROGRESS}"
-    --load
-  )
+  local args=(build)
+  
+  # Only use buildx if explicitly using a custom builder
   if [[ -n "${BUILDX_BUILDER}" ]]; then
-    args+=(--builder "${BUILDX_BUILDER}")
+    args=(buildx build --builder "${BUILDX_BUILDER}")
+  elif [[ -z "${USE_DEFAULT_BUILDER}" ]]; then
+    args=(buildx build)
   fi
+  
+  args+=(--progress="${BUILDX_PROGRESS}")
+  
   if [[ -n "${no_cache_flag}" ]]; then
     args+=(--no-cache)
   fi
