@@ -48,10 +48,15 @@ static char *input_buf;
 static size_t input_size;
 
 // for output
-static const char* __output_dir = ".";
+static char* __output_dir = nullptr;
+static bool __output_dir_allocated = false;
 static uint32_t __instance_id = 0;
 static uint32_t __session_id = 0;
 static uint32_t __current_index = 0;
+
+static const char* get_output_dir() {
+  return __output_dir ? __output_dir : ".";
+}
 static z3::context __z3_context;
 static size_t max_seeds = 64;
 
@@ -375,7 +380,7 @@ static void write_rewards(const std::string &path,
 
 static void generate_input(symsan::Z3ParserSolver::solution_t &solutions) {
   char path[PATH_MAX];
-  snprintf(path, PATH_MAX, "%s/id-%d-%d-%d", __output_dir,
+  snprintf(path, PATH_MAX, "%s/id-%d-%d-%d", get_output_dir(),
            __instance_id, __session_id, __current_index++);
   int fd = open(path, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR);
   if (fd == -1) {
@@ -514,10 +519,68 @@ evaluate_model_traces(const std::vector<ModelTrace> &traces) {
   return rows;
 }
 
+static bool parse_hex_seed(const char* hex_str, std::vector<uint8_t> &out) {
+  const char* p = hex_str;
+  // Skip "0x" prefix if present
+  if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+    p += 2;
+  }
+  
+  size_t len = strlen(p);
+  if (len == 0) return false;
+  
+  // Hex string must have even number of characters
+  if (len % 2 != 0) {
+    fprintf(stderr, "Hex string must have even number of digits: %s\n", hex_str);
+    return false;
+  }
+  
+  out.clear();
+  out.reserve(len / 2);
+  
+  for (size_t i = 0; i < len; i += 2) {
+    char high = p[i];
+    char low = p[i + 1];
+    
+    auto hex_to_nibble = [](char c) -> int {
+      if (c >= '0' && c <= '9') return c - '0';
+      if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+      if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+      return -1;
+    };
+    
+    int h = hex_to_nibble(high);
+    int l = hex_to_nibble(low);
+    
+    if (h < 0 || l < 0) {
+      fprintf(stderr, "Invalid hex character in: %s\n", hex_str);
+      return false;
+    }
+    
+    out.push_back(static_cast<uint8_t>((h << 4) | l));
+  }
+  
+  return true;
+}
+
 int main(int argc, char* const argv[]) {
 
   if (argc != 6) {
     fprintf(stderr, "Usage: %s target input branch_meta.json traces.json rewards_out.json\n", argv[0]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Parameters:\n");
+    fprintf(stderr, "  target          - Path to the instrumented target program to test\n");
+    fprintf(stderr, "  input           - Path to seed input file OR hex string (e.g., 0x1a1d) OR plain string\n");
+    fprintf(stderr, "                     - File path: reads binary content from file\n");
+    fprintf(stderr, "                     - Hex string: 0x1a1d or 1a1d (converts to bytes)\n");
+    fprintf(stderr, "                     - Plain string: any other string (used as-is)\n");
+    fprintf(stderr, "  branch_meta.json - JSON file containing branch metadata (line -> symSanId mapping)\n");
+    fprintf(stderr, "                     Format: {\"branches\": [{\"line\": N, \"symSanId\": M}, ...]}\n");
+    fprintf(stderr, "  traces.json     - JSON file containing model traces to evaluate\n");
+    fprintf(stderr, "                     Format: {\"target\": {\"line\": N}, \"traces\": [...]}\n");
+    fprintf(stderr, "                     Each trace has: {\"answer\": \"reachable\"|\"unreachable\", \"steps\": [...]}\n");
+    fprintf(stderr, "  rewards_out.json - Output JSON file to write reward scores for each trace\n");
+    fprintf(stderr, "\n");
     exit(1);
   }
 
@@ -547,7 +610,19 @@ int main(int argc, char* const argv[]) {
       char *end = strchr(output, ':'); // try ':' first, then ' '
       if (end == NULL) end = strchr(output, ' ');
       size_t n = end == NULL? strlen(output) : (size_t)(end - output);
-      __output_dir = strndup(output, n);
+      // Free previously allocated output_dir if any
+      if (__output_dir_allocated && __output_dir) {
+        free(__output_dir);
+        __output_dir = nullptr;
+        __output_dir_allocated = false;
+      }
+      char *new_dir = strndup(output, n);
+      if (new_dir) {
+        __output_dir = new_dir;
+        __output_dir_allocated = true;
+      } else {
+        fprintf(stderr, "Warning: Failed to allocate memory for output_dir, using default\n");
+      }
     }
 
     // check if input is stdin
@@ -579,20 +654,58 @@ int main(int argc, char* const argv[]) {
   }
 
   // load initial seed into queue
-  struct stat st;
-  int input_fd = open(input, O_RDONLY);
-  if (input_fd == -1) {
-    fprintf(stderr, "Failed to open input file: %s\n", strerror(errno));
-    exit(1);
-  }
-  fstat(input_fd, &st);
   Seed s0;
-  s0.data.resize(st.st_size);
-  if (read(input_fd, s0.data.data(), st.st_size) != st.st_size) {
-    fprintf(stderr, "Failed to read seed input: %s\n", strerror(errno));
-    exit(1);
+  struct stat st;
+  
+  // Check if input starts with "0x" or is all hex digits (hex string mode)
+  bool is_hex = (input[0] == '0' && (input[1] == 'x' || input[1] == 'X'));
+  if (!is_hex && strlen(input) > 0) {
+    // Check if it's all hex digits
+    bool all_hex = true;
+    for (const char* p = input; *p; ++p) {
+      if (!((*p >= '0' && *p <= '9') || 
+            (*p >= 'a' && *p <= 'f') || 
+            (*p >= 'A' && *p <= 'F'))) {
+        all_hex = false;
+        break;
+      }
+    }
+    // Only treat as hex if it has even number of digits and at least 2 chars
+    if (all_hex && strlen(input) >= 2 && strlen(input) % 2 == 0) {
+      is_hex = true;
+    }
   }
-  close(input_fd);
+  
+  if (is_hex) {
+    // Parse as hex string
+    if (!parse_hex_seed(input, s0.data)) {
+      fprintf(stderr, "Failed to parse hex seed: %s\n", input);
+      exit(1);
+    }
+    fprintf(stderr, "Loaded hex seed: %s (%zu bytes)\n", input, s0.data.size());
+  } else {
+    // Try to open as file first
+    int input_fd = open(input, O_RDONLY);
+    if (input_fd != -1) {
+      // Successfully opened as file
+      fstat(input_fd, &st);
+      s0.data.resize(st.st_size);
+      if (read(input_fd, s0.data.data(), st.st_size) != st.st_size) {
+        fprintf(stderr, "Failed to read seed input: %s\n", strerror(errno));
+        close(input_fd);
+        exit(1);
+      }
+      close(input_fd);
+      fprintf(stderr, "Loaded seed from file: %s (%zu bytes)\n", input, s0.data.size());
+    } else {
+      // Treat as plain string
+      size_t len = strlen(input);
+      s0.data.resize(len);
+      memcpy(s0.data.data(), input, len);
+      fprintf(stderr, "Loaded string seed: %s (%zu bytes)\n", input, s0.data.size());
+    }
+  }
+  
   seed_queue.push_back(std::move(s0));
 
   // setup launcher
@@ -615,7 +728,7 @@ int main(int argc, char* const argv[]) {
 
     // write seed to temp file
     char tmp_path[PATH_MAX];
-    snprintf(tmp_path, PATH_MAX, "%s/.fgtest-tmp-%u", __output_dir, __current_index++);
+    snprintf(tmp_path, PATH_MAX, "%s/.fgtest-tmp-%u", get_output_dir(), __current_index++);
     int fd = open(tmp_path, O_CREAT | O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR);
     if (fd == -1) {
       fprintf(stderr, "Failed to create temp seed file: %s\n", strerror(errno));
@@ -799,5 +912,13 @@ int main(int argc, char* const argv[]) {
   }
 
   symsan_destroy();
+  
+  // Clean up allocated output_dir
+  if (__output_dir_allocated && __output_dir) {
+    free(__output_dir);
+    __output_dir = nullptr;
+    __output_dir_allocated = false;
+  }
+  
   exit(0);
 }
