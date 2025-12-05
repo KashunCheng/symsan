@@ -2,18 +2,27 @@
 FastAPI Web Service for fgtest - 极简版本
 提供 REST API 接口来提交任务、查询状态和下载结果
 """
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import uuid
 import json
 import threading
+import traceback
+import logging
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
 from fgtest_wrapper import run_fgtest_task
+
+# 配置日志
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="fgtest Web Service",

@@ -59,6 +59,25 @@ TASK_ID3=$(curl -s -X POST "$API_URL/api/submit" \
 echo "Task ID: $TASK_ID3"
 echo ""
 
+# 测试提交任务 - 使用 control_temp 程序
+echo "7. Submit task with control_temp program (seed=\"1 35 2 0\"):"
+TASK_ID4=$(curl -s -X POST "$API_URL/api/submit" \
+  -F "program=control_temp" \
+  -F "seed=1 35 2 0" \
+  -F "traces=@../examples/control_temp_traces.json" \
+  | jq -r '.task_id')
+
+echo "Task ID: $TASK_ID4"
+echo ""
+
+# 等待一下
+sleep 2
+
+# 查询 control_temp 任务状态
+echo "8. Query control_temp task status:"
+curl -s "$API_URL/api/status/$TASK_ID4" | jq .
+echo ""
+
 echo "=== All API tests completed ==="
 echo "Use 'curl $API_URL/api/status/{TASK_ID}' to check task status"
 echo "Use 'curl $API_URL/api/download/{TASK_ID}' to download results"
