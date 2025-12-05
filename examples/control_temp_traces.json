@@ -68,6 +68,15 @@
     {
       "answer": "unreachable",
       "steps": []
+    },
+    {
+      "answer": "reachable",
+      "steps": [
+        { "line": 67, "dir": "T" },
+        { "line": 69, "dir": "T" },
+        { "line": 100, "dir": "F" },
+        { "line": 102, "dir": "F" }
+      ]
     }
   ]
 }
