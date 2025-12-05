@@ -1,0 +1,20 @@
+# Build artifacts
+build/
+install/
+
+# Git
+.git/
+.gitignore
+
+# IDE/Editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# Docker
+.dockerignore
+
+# Web service runtime artifacts
+web-service/uploads/
+web-service/results/

@@ -37,21 +37,60 @@ using namespace __dfsan;
 
 #define OPTIMISTIC 1
 
+// Define FGTEST_DEBUG to enable verbose debug output
+// #define FGTEST_DEBUG 1
+
 #undef AOUT
+#ifdef FGTEST_DEBUG
 # define AOUT(...)                                      \
   do {                                                  \
     printf(__VA_ARGS__);                                \
   } while(false)
+# define DOUT(...)                                      \
+  do {                                                  \
+    fprintf(stderr, "[FGTEST] " __VA_ARGS__);           \
+  } while(false)
+#else
+# define AOUT(...) do {} while(false)
+# define DOUT(...) do {} while(false)
+#endif
+
+// Helper function to parse hex string (e.g., "0x1a2b" or "1a2b") into bytes
+static bool parse_hex_seed(const char* hex, std::vector<uint8_t>& out) {
+  const char* p = hex;
+  // Skip optional "0x" prefix
+  if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+    p += 2;
+  }
+  size_t len = strlen(p);
+  if (len == 0 || len % 2 != 0) return false;
+  
+  out.clear();
+  out.reserve(len / 2);
+  for (size_t i = 0; i < len; i += 2) {
+    char byte_str[3] = {p[i], p[i+1], 0};
+    char* end;
+    unsigned long val = strtoul(byte_str, &end, 16);
+    if (*end != '\0') return false;
+    out.push_back(static_cast<uint8_t>(val));
+  }
+  return true;
+}
 
 // for input
 static char *input_buf;
 static size_t input_size;
 
 // for output
-static const char* __output_dir = ".";
+static char* __output_dir = nullptr;
+static bool __output_dir_allocated = false;
 static uint32_t __instance_id = 0;
 static uint32_t __session_id = 0;
 static uint32_t __current_index = 0;
+
+static const char* get_output_dir() {
+  return __output_dir ? __output_dir : ".";
+}
 static z3::context __z3_context;
 static size_t max_seeds = 64;
 
@@ -114,7 +153,7 @@ static std::string traces_path;
 static std::string reward_output_path;
 
 // cached metadata/runtime info
-static std::unordered_map<int, BranchMeta> line_to_branch;
+static std::unordered_map<int, std::vector<BranchMeta>> line_to_branches; // multiple branches per line
 static std::unordered_map<int, dfsan_label> symSanId_to_label;
 static std::vector<ObservedCond> observed_conds;
 static size_t branch_count_meta = 0;
@@ -216,49 +255,82 @@ static const char* answer_to_str(ModelTrace::Answer a) {
 
 static bool load_branch_metadata(const std::string &path) {
   std::ifstream in(path);
-  if (!in) return false;
+  if (!in) {
+    fprintf(stderr, "[fgtest] failed to open branch metadata: %s\n", path.c_str());
+    return false;
+  }
   nlohmann::json j;
-  in >> j;
-  if (!j.contains("branches")) return false;
-  branch_count_meta = j["branches"].size();
+  try {
+    in >> j;
+  } catch (const std::exception &e) {
+    fprintf(stderr, "[fgtest] failed to parse branch metadata JSON (%s): %s\n",
+            path.c_str(), e.what());
+    return false;
+  }
+  if (!j.contains("branches") || !j["branches"].is_array()) {
+    fprintf(stderr, "[fgtest] branch metadata missing \"branches\" array: %s\n", path.c_str());
+    return false;
+  }
+  size_t loaded = 0;
   for (auto &b : j["branches"]) {
-    if (!b.contains("line") || !b.contains("symSanId")) continue;
+    if (!b.contains("line") || !b.contains("symSanId")) {
+      fprintf(stderr, "[fgtest] skipping branch entry without line/symSanId\n");
+      continue;
+    }
     BranchMeta bm;
     bm.line = b["line"];
     bm.symSanId = b["symSanId"];
-    line_to_branch[bm.line] = bm;
+    line_to_branches[bm.line].push_back(bm);
     symSanId_to_line[bm.symSanId] = bm.line;
+    loaded++;
   }
-  return true;
+  branch_count_meta = loaded;
+  fprintf(stderr, "[fgtest] loaded %zu branch entries from %s\n", loaded, path.c_str());
+  return loaded > 0;
 }
 
 static bool parse_model_traces(const std::string &path,
                                int &target_line,
                                std::vector<ModelTrace> &traces) {
   std::ifstream in(path);
-  if (!in) return false;
+  if (!in) {
+    fprintf(stderr, "[fgtest] failed to open traces file: %s\n", path.c_str());
+    return false;
+  }
   nlohmann::json j;
-  in >> j;
+  try {
+    in >> j;
+  } catch (const std::exception &e) {
+    fprintf(stderr, "[fgtest] failed to parse traces JSON (%s): %s\n", path.c_str(), e.what());
+    return false;
+  }
   if (j.contains("target") && j["target"].contains("line")) {
     target_line = j["target"]["line"];
   } else {
     target_line = 0;
   }
 
-  if (!j.contains("traces")) return false;
+  if (!j.contains("traces") || !j["traces"].is_array()) {
+    fprintf(stderr, "[fgtest] traces JSON missing \"traces\" array: %s\n", path.c_str());
+    return false;
+  }
+  size_t total_steps = 0;
   for (auto &t : j["traces"]) {
     ModelTrace mt;
     std::string ans = t.value("answer", "unknown");
     mt.answer = parse_answer(ans);
-    for (auto &s : t["steps"]) {
+    for (auto &s : t["steps"]) { // tolerate missing steps field; implicit empty
       ModelStep st;
       st.line = s.value("line", 0);
       std::string dir = s.value("dir", "F");
       st.is_true = (dir == "T" || dir == "t" || dir == "true" || dir == "1");
       mt.steps.push_back(st);
+      total_steps++;
     }
     traces.push_back(std::move(mt));
   }
+  fprintf(stderr, "[fgtest] parsed %zu traces (target_line=%d, total_steps=%zu) from %s\n",
+          traces.size(), target_line, total_steps, path.c_str());
   return true;
 }
 
@@ -267,26 +339,80 @@ build_model_conds(const ModelTrace &mt) {
   std::vector<symsan::trace_cond> out;
   std::unordered_set<int> seen;
   out.reserve(mt.steps.size());
+  AOUT("build_model_conds: %zu input steps\n", mt.steps.size());
   for (auto &s : mt.steps) {
-    auto it = line_to_branch.find(s.line);
-    if (it == line_to_branch.end()) continue;
-    int symId = it->second.symSanId;
-    if (!seen.insert(symId).second) continue;
-    auto itL = symSanId_to_label.find(symId);
-    if (itL == symSanId_to_label.end()) continue;
-    symsan::trace_cond tc;
-    tc.label = itL->second;
-    tc.is_true = s.is_true;
-    out.push_back(tc);
+    AOUT("  step: line=%d, dir=%s\n", s.line, s.is_true ? "T" : "F");
+    auto it = line_to_branches.find(s.line);
+    if (it == line_to_branches.end()) {
+      AOUT("    -> line not in line_to_branches\n");
+      continue;
+    }
+    // Try all symSanIds for this line to find one that was observed
+    bool found = false;
+    for (auto &bm : it->second) {
+      int symId = bm.symSanId;
+      if (!seen.insert(symId).second) {
+        AOUT("    -> symId %d already seen\n", symId);
+        continue;
+      }
+      auto itL = symSanId_to_label.find(symId);
+      if (itL == symSanId_to_label.end()) {
+        AOUT("    -> symId %d not in symSanId_to_label\n", symId);
+        continue;
+      }
+      symsan::trace_cond tc;
+      tc.label = itL->second;
+      tc.is_true = s.is_true;
+      out.push_back(tc);
+      AOUT("    -> added: label=%d, is_true=%d (symId=%d)\n", tc.label, tc.is_true, symId);
+      found = true;
+      break;  // Found one observed symSanId for this line
+    }
+    if (!found) {
+      AOUT("    -> no observed symSanId found for line %d\n", s.line);
+    }
   }
+  AOUT("build_model_conds: %zu output conditions\n", out.size());
   return out;
 }
+
+// Map from line -> observed branch direction (true/false)
+// This is built from concrete execution, including label=0 conditions
+static std::unordered_map<int, bool> observed_line_to_dir;
 
 static StepMetrics compute_step_metrics(size_t provided, size_t expected, bool solver_sat) {
   StepMetrics m;
   if (provided == 0 || expected == 0) return m;
   m.precision = solver_sat ? 1.0 : 0.0;
   m.recall = static_cast<double>(provided) / static_cast<double>(expected);
+  if (m.precision + m.recall > 0.0) {
+    m.f1 = 2.0 * m.precision * m.recall / (m.precision + m.recall);
+  }
+  return m;
+}
+
+// New function: compare model trace against observed execution
+static StepMetrics compute_step_metrics_vs_observed(const ModelTrace &mt) {
+  StepMetrics m;
+  if (mt.steps.empty() || observed_line_to_dir.empty()) return m;
+
+  size_t correct = 0;
+  size_t matched = 0;  // steps that exist in observed map
+
+  for (auto &s : mt.steps) {
+    auto it = observed_line_to_dir.find(s.line);
+    if (it == observed_line_to_dir.end()) {
+      // step not observed - branch wasn't taken
+      continue;
+    }
+    matched++;
+    if (it->second == s.is_true) correct++;
+  }
+
+  if (matched == 0) return m;
+
+  m.precision = static_cast<double>(correct) / static_cast<double>(matched);
+  m.recall = static_cast<double>(correct) / static_cast<double>(observed_line_to_dir.size());
   if (m.precision + m.recall > 0.0) {
     m.f1 = 2.0 * m.precision * m.recall / (m.precision + m.recall);
   }
@@ -306,21 +432,23 @@ static StepMetrics compute_step_metrics_vs_gt(const ModelTrace &mt) {
   size_t gt_total = gt_map.size();
   size_t provided = mt.steps.size();
   size_t correct = 0;
-  size_t wrong = 0;
+  size_t matched = 0;  // steps that exist in ground truth (whether correct or not)
 
   for (auto &s : mt.steps) {
     auto it = gt_map.find(s.line);
     if (it == gt_map.end()) {
-      wrong++;
+      // step not in ground truth - ignore for precision, but could be valid path
       continue;
     }
+    matched++;
     if (it->second == s.is_true) correct++;
-    else wrong++;
   }
 
   if (gt_total == 0 || provided == 0) return m;
 
-  m.precision = static_cast<double>(correct) / static_cast<double>(provided);
+  // precision: of the steps that match GT lines, how many have correct direction
+  // recall: of the GT steps, how many did we correctly predict
+  m.precision = (matched > 0) ? static_cast<double>(correct) / static_cast<double>(matched) : 0.0;
   m.recall = static_cast<double>(correct) / static_cast<double>(gt_total);
   if (m.precision + m.recall > 0.0) {
     m.f1 = 2.0 * m.precision * m.recall / (m.precision + m.recall);
@@ -330,8 +458,9 @@ static StepMetrics compute_step_metrics_vs_gt(const ModelTrace &mt) {
 
 static double compute_reward(const ModelTrace &mt, bool sat, bool unknown,
                              const StepMetrics &m) {
-  if (unknown) return -0.1; // timeout/unknown solver status
+  double path_score = m.f1; // already in [0,1]
 
+  // Compute status score - how well does the answer match target_reached?
   double status_score = 0.0;
   if (target_reached) {
     if (mt.answer == ModelTrace::Reachable) status_score = 1.0;
@@ -341,12 +470,21 @@ static double compute_reward(const ModelTrace &mt, bool sat, bool unknown,
     else if (mt.answer == ModelTrace::Reachable) status_score = -1.0;
   }
 
+  // When solver is unknown (e.g., Z3 couldn't evaluate the trace), 
+  // still use status and step metrics but with reduced confidence
+  if (unknown) {
+    // 50% weight on status (answer correctness)
+    // 30% weight on step metrics (path correctness)
+    // 20% penalty for solver uncertainty
+    double reward = 0.5 * status_score + 0.3 * path_score - 0.2;
+    if (!mt.steps.empty()) reward += 0.05;
+    return reward;
+  }
+
   double sat_score = 0.0;
   if (mt.answer == ModelTrace::Reachable) {
     sat_score = sat ? 0.5 : -0.5;
   }
-
-  double path_score = m.f1; // already in [0,1]
 
   double reward = 0.6 * status_score + 0.2 * sat_score + 0.2 * path_score;
   if (!mt.steps.empty()) reward += 0.05; // small format bonus
@@ -375,7 +513,7 @@ static void write_rewards(const std::string &path,
 
 static void generate_input(symsan::Z3ParserSolver::solution_t &solutions) {
   char path[PATH_MAX];
-  snprintf(path, PATH_MAX, "%s/id-%d-%d-%d", __output_dir,
+  snprintf(path, PATH_MAX, "%s/id-%d-%d-%d", get_output_dir(),
            __instance_id, __session_id, __current_index++);
   int fd = open(path, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR);
   if (fd == -1) {
@@ -476,13 +614,20 @@ evaluate_model_traces(const std::vector<ModelTrace> &traces) {
     row.answer = t.answer;
 
     auto conds = build_model_conds(t);
-    row.provided_steps = conds.size();
+    row.provided_steps = t.steps.size();  // Use actual steps, not just mapped ones
 
     uint64_t task_id = 0;
     // When evaluating model traces, avoid nested deps recorded from the last concrete run.
-    bool build_ok = (__z3_parser->build_trace_task(conds, /*add_nested=*/false, task_id) == 0);
-    if (!build_ok) {
+    AOUT("Calling build_trace_task with %zu conds:\n", conds.size());
+    for (size_t i = 0; i < conds.size(); i++) {
+      AOUT("  cond[%zu]: label=%d, is_true=%d\n", i, conds[i].label, conds[i].is_true);
+    }
+    int build_ret = __z3_parser->build_trace_task(conds, /*add_nested=*/false, task_id);
+    AOUT("build_trace_task returned %d for %zu conds\n", build_ret, conds.size());
+    if (build_ret != 0) {
+      // Z3 couldn't build task - fall back to observed comparison
       row.solver_unknown = true;
+      row.metrics = compute_step_metrics_vs_observed(t);
       row.reward = compute_reward(t, false, true, row.metrics);
       rows.push_back(row);
       continue;
@@ -504,6 +649,8 @@ evaluate_model_traces(const std::vector<ModelTrace> &traces) {
 
     if (target_reached && !ground_truth_path.empty()) {
       row.metrics = compute_step_metrics_vs_gt(t);
+    } else if (!observed_line_to_dir.empty()) {
+      row.metrics = compute_step_metrics_vs_observed(t);
     } else {
       row.metrics = compute_step_metrics(row.provided_steps, branch_count_meta, row.solver_sat);
     }
@@ -517,7 +664,19 @@ evaluate_model_traces(const std::vector<ModelTrace> &traces) {
 int main(int argc, char* const argv[]) {
 
   if (argc != 6) {
-    fprintf(stderr, "Usage: %s target input branch_meta.json traces.json rewards_out.json\n", argv[0]);
+    fprintf(stderr, "Usage: %s target seed_string branch_meta.json traces.json rewards_out.json\n", argv[0]);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Parameters:\n");
+    fprintf(stderr, "  target          - Path to the instrumented target program to test\n");
+    fprintf(stderr, "  seed_string     - Seed data written directly to the target's stdin\n");
+    fprintf(stderr, "                     (plain string; e.g., \"0x1a1d\" is used as literal text)\n");
+    fprintf(stderr, "  branch_meta.json - JSON file containing branch metadata (line -> symSanId mapping)\n");
+    fprintf(stderr, "                     Format: {\"branches\": [{\"line\": N, \"symSanId\": M}, ...]}\n");
+    fprintf(stderr, "  traces.json     - JSON file containing model traces to evaluate\n");
+    fprintf(stderr, "                     Format: {\"target\": {\"line\": N}, \"traces\": [...]}\n");
+    fprintf(stderr, "                     Each trace has: {\"answer\": \"reachable\"|\"unreachable\", \"steps\": [...]}\n");
+    fprintf(stderr, "  rewards_out.json - Output JSON file to write reward scores for each trace\n");
+    fprintf(stderr, "\n");
     exit(1);
   }
 
@@ -527,15 +686,15 @@ int main(int argc, char* const argv[]) {
   branch_meta_path = argv[3];
   traces_path = argv[4];
   reward_output_path = argv[5];
+  char *program = argv[1];
+  char *input = argv[2];
   if (!load_branch_metadata(branch_meta_path)) {
     fprintf(stderr, "Failed to load branch metadata from %s\n", branch_meta_path.c_str());
     exit(1);
   }
+  fprintf(stderr, "[fgtest] target=%s input=%s branch_meta=%s traces=%s rewards=%s\n",
+          program, input, branch_meta_path.c_str(), traces_path.c_str(), reward_output_path.c_str());
 
-  char *program = argv[1];
-  char *input = argv[2];
-
-  int is_stdin = 0;
   int solve_ub = 0;
   int debug = 0;
   char *options = getenv("TAINT_OPTIONS");
@@ -547,18 +706,20 @@ int main(int argc, char* const argv[]) {
       char *end = strchr(output, ':'); // try ':' first, then ' '
       if (end == NULL) end = strchr(output, ' ');
       size_t n = end == NULL? strlen(output) : (size_t)(end - output);
-      __output_dir = strndup(output, n);
-    }
-
-    // check if input is stdin
-    char *taint_file = strstr(options, "taint_file=");
-    if (taint_file) {
-      taint_file += strlen("taint_file="); // skip "taint_file="
-      char *end = strchr(taint_file, ':');
-      if (end == NULL) end = strchr(taint_file, ' ');
-      size_t n = end == NULL? strlen(taint_file) : (size_t)(end - taint_file);
-      if (n == 5 && !strncmp(taint_file, "stdin", 5))
-        is_stdin = 1;
+      // Free previously allocated output_dir if any
+      if (__output_dir_allocated && __output_dir) {
+        free(__output_dir);
+        __output_dir = nullptr;
+        __output_dir_allocated = false;
+      }
+      char *new_dir = strndup(output, n);
+      if (new_dir) {
+        __output_dir = new_dir;
+        __output_dir_allocated = true;
+        fprintf(stderr, "[fgtest] output_dir set to %s\n", __output_dir);
+      } else {
+        fprintf(stderr, "Warning: Failed to allocate memory for output_dir, using default\n");
+      }
     }
 
     // check for debug
@@ -579,20 +740,60 @@ int main(int argc, char* const argv[]) {
   }
 
   // load initial seed into queue
-  struct stat st;
-  int input_fd = open(input, O_RDONLY);
-  if (input_fd == -1) {
-    fprintf(stderr, "Failed to open input file: %s\n", strerror(errno));
-    exit(1);
-  }
-  fstat(input_fd, &st);
   Seed s0;
-  s0.data.resize(st.st_size);
-  if (read(input_fd, s0.data.data(), st.st_size) != st.st_size) {
-    fprintf(stderr, "Failed to read seed input: %s\n", strerror(errno));
-    exit(1);
+  struct stat st;
+  
+  // Check if input starts with "0x" or is all hex digits (hex string mode)
+  bool is_hex = (input[0] == '0' && (input[1] == 'x' || input[1] == 'X'));
+  if (!is_hex && strlen(input) > 0) {
+    // Check if it's all hex digits
+    bool all_hex = true;
+    for (const char* p = input; *p; ++p) {
+      if (!((*p >= '0' && *p <= '9') || 
+            (*p >= 'a' && *p <= 'f') || 
+            (*p >= 'A' && *p <= 'F'))) {
+        all_hex = false;
+        break;
+      }
+    }
+    // Only treat as hex if it has even number of digits and at least 2 chars
+    if (all_hex && strlen(input) >= 2 && strlen(input) % 2 == 0) {
+      is_hex = true;
+    }
   }
-  close(input_fd);
+  
+  if (is_hex) {
+    // Parse as hex string
+    if (!parse_hex_seed(input, s0.data)) {
+      fprintf(stderr, "Failed to parse hex seed: %s\n", input);
+      exit(1);
+    }
+    fprintf(stderr, "Loaded hex seed: %s (%zu bytes)\n", input, s0.data.size());
+  } else {
+    // Try to open as file first
+    int input_fd = open(input, O_RDONLY);
+    if (input_fd != -1) {
+      // Successfully opened as file
+      printf("Treating input as file: %s\n", input);
+      fstat(input_fd, &st);
+      s0.data.resize(st.st_size);
+      if (read(input_fd, s0.data.data(), st.st_size) != st.st_size) {
+        fprintf(stderr, "Failed to read seed input: %s\n", strerror(errno));
+        close(input_fd);
+        exit(1);
+      }
+      close(input_fd);
+      fprintf(stderr, "Loaded seed from file: %s (%zu bytes)\n", input, s0.data.size());
+    } else {
+      // Treat as plain string
+      printf("Treating input as plain string: %s\n", input);
+      size_t len = strlen(input);
+      s0.data.resize(len);
+      memcpy(s0.data.data(), input, len);
+      fprintf(stderr, "Loaded string seed: %s (%zu bytes)\n", input, s0.data.size());
+    }
+  }
+  
   seed_queue.push_back(std::move(s0));
 
   // setup launcher
@@ -606,7 +807,9 @@ int main(int argc, char* const argv[]) {
   symsan_set_bounds_check(1);
   symsan_set_solve_ub(solve_ub);
   // exploration loop over queued seeds
+  AOUT("Starting exploration loop, max_seeds=%zu\n", max_seeds);
   while (!seed_queue.empty() && seeds_processed < max_seeds) {
+    AOUT("Processing seed %zu/%zu, queue size=%zu\n", seeds_processed + 1, max_seeds, seed_queue.size());
     Seed seed = std::move(seed_queue.front());
     seed_queue.pop_front();
     ++seeds_processed;
@@ -615,7 +818,7 @@ int main(int argc, char* const argv[]) {
 
     // write seed to temp file
     char tmp_path[PATH_MAX];
-    snprintf(tmp_path, PATH_MAX, "%s/.fgtest-tmp-%u", __output_dir, __current_index++);
+    snprintf(tmp_path, PATH_MAX, "%s/.fgtest-tmp-%u", get_output_dir(), __current_index++);
     int fd = open(tmp_path, O_CREAT | O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR);
     if (fd == -1) {
       fprintf(stderr, "Failed to create temp seed file: %s\n", strerror(errno));
@@ -638,7 +841,7 @@ int main(int argc, char* const argv[]) {
       continue;
     }
 
-    if (symsan_set_input(is_stdin ? "stdin" : tmp_path) != 0) {
+    if (symsan_set_input("stdin") != 0) {
       fprintf(stderr, "Failed to set input\n");
       munmap(input_buf, input_size);
       close(fd);
@@ -695,6 +898,16 @@ int main(int argc, char* const argv[]) {
           symSanId_to_label[msg.id] = msg.label;
           observed_conds.push_back({static_cast<int>(msg.id), msg.label, msg.result != 0});
           run_conds.push_back({static_cast<int>(msg.id), msg.label, msg.result != 0});
+          // Record observed branch direction by line (even for label=0)
+          {
+            auto itLine = symSanId_to_line.find(msg.id);
+            if (itLine != symSanId_to_line.end()) {
+              observed_line_to_dir[itLine->second] = (msg.result != 0);
+              AOUT("  observed: symId=%u -> line=%d, dir=%s\n", msg.id, itLine->second, msg.result ? "T" : "F");
+            } else {
+              AOUT("  not found in symSanId_to_line: symId=%u\n", msg.id);
+            }
+          }
           __solve_cond(msg.label, msg.result, msg.flags & F_ADD_CONS, (void*)msg.addr);
           break;
         case gep_type:
@@ -782,9 +995,20 @@ int main(int argc, char* const argv[]) {
     }
     std::sort(ground_truth_path.begin(), ground_truth_path.end(),
               [](const GTStep &a, const GTStep &b) { return a.line < b.line; });
+    AOUT("Ground truth path (%zu steps):\n", ground_truth_path.size());
+    for (auto &s : ground_truth_path) {
+      AOUT("  line=%d, dir=%s\n", s.line, s.is_true ? "T" : "F");
+    }
   }
 
   if (reward_mode) {
+    AOUT("target_reached=%d, target_runs=%u\n", target_reached, target_runs);
+    AOUT("observed_line_to_dir has %zu entries:\n", observed_line_to_dir.size());
+    for (auto &kv : observed_line_to_dir) {
+      AOUT("  line=%d -> dir=%s\n", kv.first, kv.second ? "T" : "F");
+    }
+    AOUT("observed_conds has %zu entries:\n", observed_conds.size());
+    AOUT("symSanId_to_label has %zu entries:\n", symSanId_to_label.size());
     if (__z3_parser) {
       __z3_parser->set_strict_value_filtering(false);
     }
@@ -794,10 +1018,20 @@ int main(int argc, char* const argv[]) {
       fprintf(stderr, "Failed to parse traces from %s\n", traces_path.c_str());
       exit(1);
     }
+    fprintf(stderr, "[fgtest] evaluating %zu traces; target_line=%d; branch_meta_entries=%zu\n",
+            traces.size(), target_line, branch_count_meta);
     auto rows = evaluate_model_traces(traces);
     write_rewards(reward_output_path, rows);
   }
 
   symsan_destroy();
+  
+  // Clean up allocated output_dir
+  if (__output_dir_allocated && __output_dir) {
+    free(__output_dir);
+    __output_dir = nullptr;
+    __output_dir_allocated = false;
+  }
+  
   exit(0);
 }

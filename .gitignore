@@ -25,3 +25,7 @@ examples/*
 !examples/*.c
 !examples/*traces.json
 !examples/seed.bin
+**/__pycache__/*.pyc
+web-service/results/*
+web-service/uploads/*
+!web-service/results/.gitkeep
