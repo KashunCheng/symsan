@@ -92,7 +92,7 @@ static const char* get_output_dir() {
   return __output_dir ? __output_dir : ".";
 }
 static z3::context __z3_context;
-static size_t max_seeds = 2;
+static size_t max_seeds = 64;
 
 // z3parser
 symsan::Z3ParserSolver *__z3_parser = nullptr;

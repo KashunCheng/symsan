@@ -42,6 +42,23 @@
       ]
     },
     {
+      "answer": "reachable",
+      "steps": [{ "line": 67, "dir": "T" },
+        { "line": 69, "dir": "T" },
+        { "line": 100, "dir": "F" },
+        { "line": 102, "dir": "T" }]
+    },
+    {
+      "answer": "reachable",
+      "steps": [
+        { "line": 1, "dir": "T" },
+        { "line": 2, "dir": "T" },
+        { "line": 3, "dir": "F" },
+        { "line": 4, "dir": "F" },
+        { "line": 5, "dir": "T" }
+      ]
+    },
+    {
       "answer": "unreachable",
       "steps": [
         { "line": 67, "dir": "T" },
