@@ -37,9 +37,9 @@ SANITIZER_INTERFACE_ATTRIBUTE THREADLOCAL uint32_t __taint_trace_callstack;
 
 namespace {
 
-// Reserve 0x100000000 bytes (split evenly) for the two coverage hash tables.
+// Reserve 0x100000000 / 16 bytes (split evenly) for the two coverage hash tables.
 constexpr uptr kCoverageTablesTotalBytes = 0x100000000ull;
-constexpr uptr kCoverageTableBytes = kCoverageTablesTotalBytes / 2;
+constexpr uptr kCoverageTableBytes = kCoverageTablesTotalBytes / 32;
 constexpr size_t kCoverageMapMaxEntries = kCoverageTableBytes / 64;
 
 template <int TableId>
@@ -61,6 +61,7 @@ private:
   static void init() {
     __sanitizer::SpinMutexLock lock(&Mutex);
     if (!buffer_) {
+      AOUT("[Folly Table]Allocating %llx bytes\n", (unsigned long long)kCoverageTableBytes);
       buffer_ = reinterpret_cast<char *>(__taint::allocator_alloc(kCoverageTableBytes));
       __sanitizer::internal_memset(buffer_, 0, kCoverageTableBytes);
     }

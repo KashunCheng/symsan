@@ -94,7 +94,7 @@ SANITIZER_INTERFACE_ATTRIBUTE uptr __dfsan_shadow_ptr_mask;
 // |                    |
 // |    union table     |
 // |                    |
-// +--------------------+ 0x400300000000 (kUnionTableAddr)
+// +--------------------+ 0x400100000000 (kUnionTableAddr)
 // |    hash table      |
 // +--------------------+ 0x400000000000 (kHashTableAddr)
 // |   shadow memory    |

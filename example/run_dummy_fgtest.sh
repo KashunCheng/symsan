@@ -23,6 +23,6 @@ if [[ ! -f "$input_file" ]]; then
   printf '\x00' > "$input_file"
 fi
 
-export TAINT_OPTIONS="taint_file=$input_file output_dir=$output_dir"
+export TAINT_OPTIONS="taint_file=stdin output_dir=$output_dir debug=1"
 
 exec "$fgtest_bin" "$target_bin" "$input_file"
