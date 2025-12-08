@@ -178,7 +178,7 @@ static inline bool is_valid_op(uint16_t op) {
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
-void __taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint32_t cid);
+void __taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint64_t cid);
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 dfsan_label __taint_union(dfsan_label l1, dfsan_label l2, uint16_t op,
@@ -661,7 +661,7 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 void __taint_solve_bounds(dfsan_label ptr_label, uint64_t ptr,
                           dfsan_label index_label, int64_t index,
                           uint64_t num_elems, uint64_t elem_size,
-                          int64_t current_offset, uint32_t cid) {
+                          int64_t current_offset, uint64_t cid) {
   if (index_label == 0 || !flags().solve_ub)
     return;
 
@@ -1284,18 +1284,18 @@ SANITIZER_INTERFACE_WEAK_DEF(void, InitializeSolver, void) {}
 
 // Default empty implementations (weak) for hooks
 SANITIZER_INTERFACE_WEAK_DEF(void, __taint_trace_cmp, dfsan_label, dfsan_label,
-                             uint32_t, uint32_t, uint64_t, uint64_t, uint32_t) {}
+                             uint32_t, uint32_t, uint64_t, uint64_t, uint64_t) {}
 SANITIZER_INTERFACE_WEAK_DEF(void, __taint_trace_cond, dfsan_label, bool,
-                             uint8_t, uint32_t) {}
-SANITIZER_INTERFACE_WEAK_DEF(void, __taint_trace_loop, uint32_t, uint32_t) {}
-SANITIZER_INTERFACE_WEAK_DEF(void, __taint_trace_switch_end, uint32_t) {}
+                             uint8_t, uint64_t) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __taint_trace_loop, uint64_t, uint32_t) {}
+SANITIZER_INTERFACE_WEAK_DEF(void, __taint_trace_switch_end, uint64_t) {}
 SANITIZER_INTERFACE_WEAK_DEF(dfsan_label, __taint_trace_select, dfsan_label,
                              dfsan_label, dfsan_label, uint8_t, uint8_t, uint8_t,
-                             uint32_t) {return 0;}
+                             uint64_t) {return 0;}
 SANITIZER_INTERFACE_WEAK_DEF(void, __taint_trace_indcall, dfsan_label) {}
 SANITIZER_INTERFACE_WEAK_DEF(void, __taint_trace_gep, dfsan_label, uint64_t,
                              dfsan_label, int64_t, uint64_t, uint64_t, int64_t,
-                             uint32_t) {}
+                             uint64_t) {}
 SANITIZER_INTERFACE_WEAK_DEF(void, __taint_trace_offset, dfsan_label, int64_t,
                              unsigned) {}
 SANITIZER_INTERFACE_WEAK_DEF(void, __taint_trace_memcmp, dfsan_label) {}

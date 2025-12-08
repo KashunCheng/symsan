@@ -9,7 +9,7 @@ class pipe_msg(ctypes.Structure):
                 ("instance_id", ctypes.c_uint32),
                 ("addr", ctypes.c_ulonglong),
                 ("context", ctypes.c_uint32),
-                ("id", ctypes.c_uint32),
+                ("id", ctypes.c_ulonglong),
                 ("label", ctypes.c_uint32),
                 ("result", ctypes.c_uint64)]
 

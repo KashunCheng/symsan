@@ -138,7 +138,7 @@ dfsan_label_info* __dfsan::get_label_info(dfsan_label label) {
 }
 
 // FIXME: local filter?
-static std::unordered_map<uint32_t, uint8_t> local_counter;
+static std::unordered_map<uint64_t, uint8_t> local_counter;
 static std::unordered_set<uint32_t> local_index_filter;
 // staticstics
 static uint64_t total_branches = 0;

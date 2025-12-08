@@ -274,7 +274,7 @@ struct pipe_msg {
   uint32_t instance_id;
   uptr addr;
   uint32_t context;
-  uint32_t id;
+  uint64_t id;
   uint32_t label;
   uint64_t result;
 } __attribute__((packed));

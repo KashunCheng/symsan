@@ -64,7 +64,6 @@
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/DJB.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -91,6 +90,28 @@
 #include <msgpack.hpp>
 
 using namespace llvm;
+
+static inline uint64_t djbHash(StringRef Buffer, uint64_t H = 5381) {
+  for (unsigned char C : Buffer.bytes())
+    H = (H << 5) + H + C;
+  return H;
+}
+
+static std::string buildSourcePath(const DILocation *Loc) {
+  if (!Loc)
+    return "<unknown>";
+  StringRef Filename = Loc->getFilename();
+  if (Filename.empty())
+    return "<unknown>";
+  if (sys::path::is_absolute(Filename))
+    return Filename.str();
+  StringRef Directory = Loc->getDirectory();
+  if (Directory.empty())
+    return Filename.str();
+  SmallString<256> FullPath(Directory);
+  sys::path::append(FullPath, Filename);
+  return FullPath.str().str();
+}
 
 // This must be consistent with ShadowWidthBits.
 static const Align ShadowTLSAlignment = Align(4);
@@ -461,7 +482,7 @@ class Taint {
 
   void addContextRecording(Function &F);
   void addFrameTracing(Function &F);
-  uint32_t getInstructionId(Instruction *Inst);
+  uint64_t getInstructionId(Instruction *Inst);
 
   void initializeRuntimeFunctions(Module &M);
   void initializeCallbackFunctions(Module &M);
@@ -804,19 +825,17 @@ Type *Taint::getShadowTy(Value *V) {
   return getShadowTy(V->getType());
 }
 
-uint32_t Taint::getInstructionId(Instruction *Inst) {
-  static uint32_t unamed = 0;
-  auto SourceInfo = Mod->getSourceFileName();
+uint64_t Taint::getInstructionId(Instruction *Inst) {
+  static uint64_t Unnamed = 0;
   DILocation *Loc = Inst->getDebugLoc();
+  SmallString<256> SourceInfo;
+  raw_svector_ostream OS(SourceInfo);
   if (Loc) {
-    auto Line = Loc->getLine();
-    auto Col = Loc->getColumn();
-    SourceInfo += ":" + std::to_string(Line) + ":" + std::to_string(Col);
+    OS << buildSourcePath(Loc) << ":" << Loc->getLine() << ":" << Loc->getColumn();
   } else {
-    SourceInfo += "unamed:" + std::to_string(unamed++);
+    OS << Mod->getSourceFileName() << ":unnamed:" << Unnamed++;
   }
-
-  return djbHash(SourceInfo);
+  return djbHash(OS.str());
 }
 
 void Taint::addContextRecording(Function &F) {
@@ -838,9 +857,9 @@ void Taint::addContextRecording(Function &F) {
   if (!F.hasExternalLinkage()) {
     FName = StringRef(Mod->getSourceFileName() + "::" + FName.str());
   }
-  uint32_t hash = djbHash(FName);
-
-  ConstantInt *CID = ConstantInt::get(Int32Ty, hash);
+  uint64_t hash = djbHash(FName);
+  
+  ConstantInt *CID = ConstantInt::get(Int32Ty, static_cast<uint32_t>(hash & 0xffffffffULL));
   LoadInst *LCS = IRB.CreateLoad(Int32Ty, CallStack);
   LCS->setMetadata(Mod->getMDKindID("nosanitize"), MDNode::get(*Ctx, None));
   Value *NCS = IRB.CreateXor(LCS, CID);
@@ -934,25 +953,25 @@ bool Taint::initializeModule(Module &M) {
   TaintVarargWrapperFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), Type::getInt8PtrTy(*Ctx), /*isVarArg=*/false);
   Type *TaintTraceCmpArgs[7] = { PrimitiveShadowTy, PrimitiveShadowTy,
-      Int32Ty, Int32Ty, Int64Ty, Int64Ty, Int32Ty };
+      Int32Ty, Int32Ty, Int64Ty, Int64Ty, Int64Ty };
   TaintTraceCmpFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), TaintTraceCmpArgs, false);
   Type *TaintTraceCondArgs[4] = { PrimitiveShadowTy, IntegerType::get(*Ctx, 1),
-      Int8Ty, Int32Ty };
+      Int8Ty, Int64Ty };
   TaintTraceCondFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), TaintTraceCondArgs, false);
   TaintTraceLoopFnTy = FunctionType::get(
-      Type::getVoidTy(*Ctx), { Int32Ty, Int32Ty }, false);
+      Type::getVoidTy(*Ctx), { Int64Ty, Int32Ty }, false);
   TaintTraceSwitchEndFnTy = FunctionType::get(
-      Type::getVoidTy(*Ctx), { Int32Ty }, false);
+      Type::getVoidTy(*Ctx), { Int64Ty }, false);
   Type *TaintTraceSelectArgs[] = { PrimitiveShadowTy, PrimitiveShadowTy,
-      PrimitiveShadowTy, Int8Ty, Int8Ty, Int8Ty, Int32Ty };
+      PrimitiveShadowTy, Int8Ty, Int8Ty, Int8Ty, Int64Ty };
   TaintTraceSelectFnTy = FunctionType::get(
       PrimitiveShadowTy, TaintTraceSelectArgs, false);
   TaintTraceIndirectCallFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), { PrimitiveShadowTy }, false);
   Type *TaintTraceGEPArgs[8] = { PrimitiveShadowTy, Int64Ty, PrimitiveShadowTy,
-      Int64Ty, Int64Ty, Int64Ty, Int64Ty, Int32Ty };
+      Int64Ty, Int64Ty, Int64Ty, Int64Ty, Int64Ty };
   TaintTraceGEPFnTy = FunctionType::get(
       Type::getVoidTy(*Ctx), TaintTraceGEPArgs, false);
   TaintPushStackFrameFnTy = FunctionType::get(
@@ -1536,7 +1555,7 @@ bool Taint::runImpl(Module &M) {
         if (TF.LI->isLoopHeader(BB)) {
           // This is a loop header
           Instruction *FI = &*(BB->getFirstInsertionPt());
-          ConstantInt *CID = ConstantInt::get(Int32Ty, getInstructionId(FI));
+          ConstantInt *CID = ConstantInt::get(Int64Ty, getInstructionId(FI));
           ConstantInt *LoopDepth = ConstantInt::get(Int32Ty, TF.LI->getLoopDepth(BB));
           IRBuilder<> IRB(FI);
           IRB.CreateCall(TaintTraceLoopFn, {CID, LoopDepth});
@@ -1547,7 +1566,7 @@ bool Taint::runImpl(Module &M) {
             if (!L->contains(Succ)) {
               Instruction *FI = &*(Succ->getFirstInsertionPt());
               IRBuilder<> IRB(FI);
-              ConstantInt *CID = ConstantInt::get(Int32Ty, getInstructionId(FI));
+              ConstantInt *CID = ConstantInt::get(Int64Ty, getInstructionId(FI));
               Loop *SuccL = TF.LI->getLoopFor(Succ);
               int succ_depth = SuccL ? SuccL->getLoopDepth() : 0;
               int depth = L->getLoopDepth();
@@ -1854,7 +1873,7 @@ void TaintFunction::solveBounds(Value *Ptr, Value* Size, Instruction *Pos) {
   ConstantInt *NumEl = ConstantInt::get(TT.Int64Ty, 0); // no allocation size
   ConstantInt *ElSize = ConstantInt::get(TT.Int64Ty, 1); // bytes array
   ConstantInt *Offset = ConstantInt::get(TT.Int64Ty, 0); // no offset
-  ConstantInt *CID = ConstantInt::get(TT.Int32Ty, TT.getInstructionId(Pos));
+  ConstantInt *CID = ConstantInt::get(TT.Int64Ty, TT.getInstructionId(Pos));
   IRB.CreateCall(TT.TaintSolveBoundsFn,
       {PtrShadow, Addr, SizeShadow, Index, NumEl, ElSize, Offset, CID});
 }
@@ -2290,7 +2309,7 @@ void TaintFunction::visitCmpInst(CmpInst *I) {
   Op2 = IRB.CreateZExtOrTrunc(Op2, TT.Int64Ty);
   ConstantInt *Size = ConstantInt::get(TT.Int32Ty, size);
   ConstantInt *Predicate = ConstantInt::get(TT.Int32Ty, I->getPredicate());
-  ConstantInt *CID = ConstantInt::get(TT.Int32Ty, TT.getInstructionId(I));
+  ConstantInt *CID = ConstantInt::get(TT.Int64Ty, TT.getInstructionId(I));
 
   IRB.CreateCall(TT.TaintTraceCmpFn, {Op1Shadow, Op2Shadow, Size, Predicate,
                  Op1, Op2, CID});
@@ -2319,7 +2338,7 @@ void TaintFunction::visitSwitchInst(SwitchInst *I) {
   unsigned size = DL.getTypeSizeInBits(Cond->getType());
   ConstantInt *Size = ConstantInt::get(TT.Int32Ty, size);
   ConstantInt *Predicate = ConstantInt::get(TT.Int32Ty, 32); // EQ, ==
-  ConstantInt *CID = ConstantInt::get(TT.Int32Ty, TT.getInstructionId(I));
+  ConstantInt *CID = ConstantInt::get(TT.Int64Ty, TT.getInstructionId(I));
 
   IRBuilder<> IRB(I);
   for (auto C : I->cases()) {
@@ -2421,7 +2440,7 @@ void TaintFunction::visitGEPInst(GetElementPtrInst *I) {
           ConstantInt *NE = ConstantInt::get(TT.Int64Ty, NumElements);
           ConstantInt *ES = ConstantInt::get(TT.Int64Ty, ElemSize);
           Value *Ptr = IRB.CreatePtrToInt(I->getPointerOperand(), TT.Int64Ty);
-          ConstantInt *CID = ConstantInt::get(TT.Int32Ty, TT.getInstructionId(I));
+          ConstantInt *CID = ConstantInt::get(TT.Int64Ty, TT.getInstructionId(I));
           if (ClSolveUB) {
             // check if index can go out of bounds
             // -fsanitize=local-bounds
@@ -2575,7 +2594,7 @@ Value* TaintFunction::visitSelectInst(Value *Cond, Value *TrueShadow,
   Cond = IRB.CreateZExt(Cond, TT.Int8Ty);
   Value *TrueVal = IRB.CreateZExt(I->getTrueValue(), TT.Int8Ty);
   Value *FalseVal = IRB.CreateZExt(I->getFalseValue(), TT.Int8Ty);
-  ConstantInt *CID = ConstantInt::get(TT.Int32Ty, TT.getInstructionId(I));
+  ConstantInt *CID = ConstantInt::get(TT.Int64Ty, TT.getInstructionId(I));
   return IRB.CreateCall(TT.TaintTraceSelectFn,
                         {CondShadow, TrueShadow, FalseShadow, Cond,
                          TrueVal, FalseVal, CID});
@@ -3030,7 +3049,7 @@ void TaintFunction::visitCondition(Value *Condition, Instruction *I) {
   if (TT.isZeroShadow(Shadow) && (flag & LoopExitBranch) == 0)
     return;
   ConstantInt *LF = ConstantInt::get(TT.Int8Ty, flag);
-  ConstantInt *CID = ConstantInt::get(TT.Int32Ty, TT.getInstructionId(I));
+  ConstantInt *CID = ConstantInt::get(TT.Int64Ty, TT.getInstructionId(I));
   IRB.CreateCall(TT.TaintTraceCondFn, {Shadow, Condition, LF, CID});
 }
 
@@ -3042,30 +3061,8 @@ void TaintVisitor::visitBranchInst(BranchInst &BR) {
 
 namespace {
 
-struct LineLocationKey {
-  const DIFile *File;
-  unsigned Line;
-};
-
-struct LineLocationKeyInfo {
-  static inline LineLocationKey getEmptyKey() {
-    return {reinterpret_cast<const DIFile *>(-1),
-            std::numeric_limits<unsigned>::max()};
-  }
-  static inline LineLocationKey getTombstoneKey() {
-    return {reinterpret_cast<const DIFile *>(-2),
-            std::numeric_limits<unsigned>::max() - 1};
-  }
-  static unsigned getHashValue(const LineLocationKey &Key) {
-    return hash_combine(Key.File, Key.Line);
-  }
-  static bool isEqual(const LineLocationKey &LHS,
-                      const LineLocationKey &RHS) {
-    return LHS.File == RHS.File && LHS.Line == RHS.Line;
-  }
-};
-
 struct LineEntry {
+  uint64_t Id;
   std::string File;
   unsigned Line;
 };
@@ -3075,7 +3072,6 @@ public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &);
 
 private:
-  static std::string buildSourcePath(const DILocation *Loc);
   static std::string deriveOutputPath(const Module &M);
   static bool writeMappingFile(const Module &M,
                                const std::vector<LineEntry> &Entries);
@@ -3103,22 +3099,23 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
                                         ModuleAnalysisManager &) {
   LLVMContext &Ctx = M.getContext();
   IntegerType *Int32Ty = Type::getInt32Ty(Ctx);
+  IntegerType *Int64Ty = Type::getInt64Ty(Ctx);
   IntegerType *Int8Ty = Type::getInt8Ty(Ctx);
-  DenseMap<LineLocationKey, uint32_t, LineLocationKeyInfo> LineIds;
+  DenseSet<uint64_t> KnownLines;
   std::vector<LineEntry> Entries;
-  DenseSet<uint32_t> CondLines;
+  DenseSet<uint64_t> CondLines;
 
-  auto GetLineId = [&](DILocation *Loc) -> Optional<uint32_t> {
+  auto GetLineId = [&](DILocation *Loc) -> Optional<uint64_t> {
     if (!Loc)
       return None;
-    LineLocationKey Key{Loc->getFile(), Loc->getLine()};
-    auto It = LineIds.find(Key);
-    if (It != LineIds.end())
-      return It->second;
-    uint32_t NewId = Entries.size();
-    LineIds.try_emplace(Key, NewId);
-    Entries.push_back({buildSourcePath(Loc), Loc->getLine()});
-    return NewId;
+    std::string Path = buildSourcePath(Loc);
+    SmallString<256> Info(Path);
+    raw_svector_ostream OS(Info);
+    OS << ":" << Loc->getLine();
+    uint64_t LineId = djbHash(OS.str());
+    if (KnownLines.insert(LineId).second)
+      Entries.push_back({LineId, std::move(Path), Loc->getLine()});
+    return LineId;
   };
 
   for (Function &F : M) {
@@ -3129,7 +3126,7 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
         DILocation *Loc = I.getDebugLoc();
         if (!Loc)
           continue;
-        Optional<uint32_t> LineId = GetLineId(Loc);
+        Optional<uint64_t> LineId = GetLineId(Loc);
         if (!LineId)
           continue;
         auto *CB = dyn_cast<CallBase>(&I);
@@ -3147,12 +3144,12 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
 
   bool Instrumented = false;
   ConstantInt *ZeroResult = ConstantInt::get(Int8Ty, 0);
-  ConstantInt *ZeroId = ConstantInt::get(Int32Ty, 0);
+  ConstantInt *ZeroId = ConstantInt::get(Int64Ty, 0);
   FunctionCallee LineCovFn;
   auto GetLineCoverageFn = [&]() -> FunctionCallee {
     if (!LineCovFn) {
       FunctionType *FnTy =
-          FunctionType::get(Type::getVoidTy(Ctx), {Int32Ty, Int8Ty, Int32Ty},
+          FunctionType::get(Type::getVoidTy(Ctx), {Int64Ty, Int8Ty, Int64Ty},
                             /*isVarArg=*/false);
       LineCovFn = M.getOrInsertFunction("_line_coverage", FnTy);
     }
@@ -3163,7 +3160,7 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
     if (F.isDeclaration())
       continue;
     for (BasicBlock &BB : F) {
-      SmallDenseSet<uint32_t, 8> SeenLines;
+      SmallDenseSet<uint64_t, 8> SeenLines;
       for (Instruction &I : BB) {
         CallBase *CB = dyn_cast<CallBase>(&I);
         if (CB) {
@@ -3178,7 +3175,7 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
         if (!Loc)
           continue;
 
-        Optional<uint32_t> LineId = GetLineId(Loc);
+        Optional<uint64_t> LineId = GetLineId(Loc);
         if (!LineId)
           continue;
 
@@ -3196,9 +3193,9 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
             if (ResultVal->getType() != Int8Ty)
               ResultVal = IRB.CreateIntCast(ResultVal, Int8Ty, /*isSigned=*/false);
             Value *CidVal = CB->getArgOperand(3);
-            if (CidVal->getType() != Int32Ty)
-              CidVal = IRB.CreateIntCast(CidVal, Int32Ty, /*isSigned=*/false);
-            Value *LineConst = ConstantInt::get(Int32Ty, *LineId);
+            if (CidVal->getType() != Int64Ty)
+              CidVal = IRB.CreateIntCast(CidVal, Int64Ty, /*isSigned=*/false);
+            Value *LineConst = ConstantInt::get(Int64Ty, *LineId);
             CallInst *CovCall =
                 IRB.CreateCall(GetLineCoverageFn(),
                                {LineConst, ResultVal, CidVal});
@@ -3224,7 +3221,7 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
           continue;
 
         IRBuilder<> IRB(InsertBefore);
-        Value *LineConst = ConstantInt::get(Int32Ty, *LineId);
+        Value *LineConst = ConstantInt::get(Int64Ty, *LineId);
         CallInst *CovCall = IRB.CreateCall(
             GetLineCoverageFn(), {LineConst, ZeroResult, ZeroId});
         CovCall->setDebugLoc(Loc);
@@ -3235,22 +3232,6 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
 
   writeMappingFile(M, Entries);
   return Instrumented ? PreservedAnalyses::none() : PreservedAnalyses::all();
-}
-
-std::string LineCoveragePass::buildSourcePath(const DILocation *Loc) {
-  if (!Loc)
-    return "<unknown>";
-  StringRef Filename = Loc->getFilename();
-  if (Filename.empty())
-    return "<unknown>";
-  if (sys::path::is_absolute(Filename))
-    return Filename.str();
-  StringRef Directory = Loc->getDirectory();
-  if (Directory.empty())
-    return Filename.str();
-  SmallString<256> FullPath(Directory);
-  sys::path::append(FullPath, Filename);
-  return FullPath.str().str();
 }
 
 std::string LineCoveragePass::deriveOutputPath(const Module &M) {
@@ -3269,11 +3250,11 @@ bool LineCoveragePass::writeMappingFile(
   msgpack::sbuffer Buffer;
   msgpack::packer<msgpack::sbuffer> Packer(&Buffer);
   Packer.pack_map(Entries.size());
-  for (uint32_t Id = 0, End = Entries.size(); Id < End; ++Id) {
-    Packer.pack_uint32(Id);
+  for (const LineEntry &Entry : Entries) {
+    Packer.pack_uint64(Entry.Id);
     Packer.pack_array(2);
-    Packer.pack(Entries[Id].File);
-    Packer.pack_uint32(Entries[Id].Line);
+    Packer.pack(Entry.File);
+    Packer.pack_uint32(Entry.Line);
   }
 
   std::error_code EC;

@@ -7,6 +7,7 @@
 
 #include <z3++.h>
 
+#include <inttypes.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -90,12 +91,12 @@ static inline bool __solve_task(uint64_t task_id) {
 
 static struct switch_true_case {
   dfsan_label label;
-  uint32_t cid;
+  uint64_t cid;
 } __switch_true_case = {0};
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_cmp(dfsan_label op1, dfsan_label op2, uint32_t size, uint32_t predicate,
-                  uint64_t c1, uint64_t c2, uint32_t cid) {
+                  uint64_t c1, uint64_t c2, uint64_t cid) {
   if ((op1 == 0 && op2 == 0))
     return;
 
@@ -109,7 +110,7 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, uint32_t size, uint32_t pred
     return;
   }
 
-  AOUT("solving cmp: %u %u %u %d %lu %lu 0x%x @%p\n",
+  AOUT("solving cmp: %u %u %u %d %lu %lu 0x%" PRIx64 " @%p\n",
        op1, op2, size, predicate, c1, c2, cid, addr);
 
   dfsan_label temp = dfsan_union(op1, op2, (predicate << 8) | ICmp, size, c1, c2);
@@ -146,12 +147,12 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, uint32_t size, uint32_t pred
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__taint_trace_switch_end(uint32_t cid) {
+__taint_trace_switch_end(uint64_t cid) {
   if (__switch_true_case.label == 0) {
     // filtering should have been done before
     return;
   } else if (__switch_true_case.cid != cid) {
-    AOUT("WARNING: switch end cid mismatch %u vs %u\n",
+    AOUT("WARNING: switch end cid mismatch %" PRIu64 " vs %" PRIu64 "\n",
          __switch_true_case.cid, cid);
     return;
   }
@@ -159,7 +160,7 @@ __taint_trace_switch_end(uint32_t cid) {
   void *addr = __builtin_return_address(0);
   dfsan_label label = __switch_true_case.label;
 
-  AOUT("solving switch end: %u 0x%x @%p\n", label, cid, addr);
+  AOUT("solving switch end: %u 0x%" PRIx64 " @%p\n", label, cid, addr);
 
   std::vector<uint64_t> tasks;
   if (__z3_parser->parse_cond(label, 1, 1, tasks)) {
@@ -183,7 +184,7 @@ __taint_trace_switch_end(uint32_t cid) {
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint32_t cid) {
+__taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint64_t cid) {
   if (label == 0) {
     // check for real loop exit
     if (!(((flag & FalseBranchLoopExit) && !r) ||
@@ -201,8 +202,8 @@ __taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint32_t cid) {
     return;
   }
 
-  AOUT("solving cond: %u %u 0x%x 0x%x %p %u\n",
-       label, r, __taint_trace_callstack, cid, addr, itr->second);
+  AOUT("solving cond: %u %u 0x%x 0x%" PRIx64 " %p %u\n",
+    label, r, __taint_trace_callstack, cid, addr, itr->second);
 
   if (__solved_labels.count(label) != 0)
     return;
@@ -229,7 +230,7 @@ __taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint32_t cid) {
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE dfsan_label
 __taint_trace_select(dfsan_label cond_label, dfsan_label true_label,
                      dfsan_label false_label, uint8_t r, uint8_t true_op,
-                     uint8_t false_op, uint32_t cid) {
+                     uint8_t false_op, uint64_t cid) {
   if (cond_label == 0)
     return r ? true_label : false_label;
 
@@ -243,7 +244,7 @@ __taint_trace_select(dfsan_label cond_label, dfsan_label true_label,
     return r ? true_label : false_label;
   }
 
-  AOUT("solving select: %u %u %u %u %u %u 0x%x @%p\n",
+  AOUT("solving select: %u %u %u %u %u %u 0x%" PRIx64 " @%p\n",
        cond_label, true_label, false_label, r, true_op, false_op, cid, addr);
 
   // check if it's actually a logical AND: select cond, label, false
@@ -301,7 +302,7 @@ __taint_trace_indcall(dfsan_label label) {
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr, dfsan_label index_label,
                   int64_t index, uint64_t num_elems, uint64_t elem_size,
-                  int64_t current_offset, uint32_t cid) {
+                  int64_t current_offset, uint64_t cid) {
   if (index_label == 0)
     return;
 

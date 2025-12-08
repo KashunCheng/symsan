@@ -14,7 +14,7 @@ struct BranchContext {
 };
 
 struct HybridBranchContext : public BranchContext {
-  uint32_t id;
+  uint64_t id;
 };
 
 struct ContextAwareBranchContext : public BranchContext {
@@ -39,7 +39,7 @@ class CovManager {
 public:
   virtual ~CovManager() {}
   virtual const std::shared_ptr<BranchContext> // don't want the saved context to be modified
-    add_branch(void *addr, uint32_t id, bool direction, uint32_t context, bool is_loop_header, bool is_loop_exit) = 0;
+    add_branch(void *addr, uint64_t id, bool direction, uint32_t context, bool is_loop_header, bool is_loop_exit) = 0;
   virtual bool
     is_branch_interesting(const std::shared_ptr<BranchContext> context) = 0;
 };
@@ -54,7 +54,7 @@ public:
   EdgeCovManager() { _ctx = std::make_shared<BranchContext>(); }
 
   const std::shared_ptr<BranchContext>
-  add_branch(void *addr, uint32_t id, bool direction, uint32_t context, bool is_loop_header, bool is_loop_exit) override {
+  add_branch(void *addr, uint64_t id, bool direction, uint32_t context, bool is_loop_header, bool is_loop_exit) override {
     auto &itr = branches[addr];
     itr.first |= direction? true : false;
     itr.second |= direction? false : true;

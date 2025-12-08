@@ -16,10 +16,15 @@
 
  */
 
+#include <inttypes.h>
 #include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_libc.h"
 #include "sanitizer_common/sanitizer_file.h"
 #include "sanitizer_common/sanitizer_posix.h"
+#include "sanitizer_common/sanitizer_mutex.h"
 #include "dfsan/dfsan.h"
+#include "dfsan/taint_allocator.h"
+#include "dfsan/folly/AtomicUnorderedMap.h"
 
 using namespace __dfsan;
 
@@ -30,9 +35,86 @@ static int __pipe_fd;
 // filter?
 SANITIZER_INTERFACE_ATTRIBUTE THREADLOCAL uint32_t __taint_trace_callstack;
 
+namespace {
+
+// Reserve 0x100000000 bytes (split evenly) for the two coverage hash tables.
+constexpr uptr kCoverageTablesTotalBytes = 0x100000000ull;
+constexpr uptr kCoverageTableBytes = kCoverageTablesTotalBytes / 2;
+constexpr size_t kCoverageMapMaxEntries = kCoverageTableBytes / 64;
+
+template <int TableId>
+struct CoverageAllocator {
+  CoverageAllocator() { init(); }
+
+  void *allocate(std::size_t n) {
+    init();
+    if (n > kCoverageTableBytes) {
+      Report("FATAL: coverage allocation request %zu exceeds table size\n", n);
+      Die();
+    }
+    return buffer_;
+  }
+
+  void deallocate(char *, std::size_t) noexcept {}
+
+private:
+  static void init() {
+    __sanitizer::SpinMutexLock lock(&Mutex);
+    if (!buffer_) {
+      buffer_ = reinterpret_cast<char *>(__taint::allocator_alloc(kCoverageTableBytes));
+      __sanitizer::internal_memset(buffer_, 0, kCoverageTableBytes);
+    }
+  }
+
+  static StaticSpinMutex Mutex;
+  static char *buffer_;
+};
+
+template <int TableId>
+StaticSpinMutex CoverageAllocator<TableId>::Mutex;
+template <int TableId>
+char *CoverageAllocator<TableId>::buffer_ = nullptr;
+
+using CoverageValue = folly::MutableAtom<char>;
+using LineCoverageAllocator = CoverageAllocator<0>;
+using BranchCoverageAllocator = CoverageAllocator<1>;
+using LineCoverageMap =
+    folly::AtomicUnorderedInsertMap<uint64_t, CoverageValue, LineCoverageAllocator>;
+using BranchCoverageMap =
+    folly::AtomicUnorderedInsertMap<uint64_t, CoverageValue, BranchCoverageAllocator>;
+
+LineCoverageMap &getLineCoverageTable() {
+  static LineCoverageAllocator Alloc;
+  static LineCoverageMap Table(kCoverageMapMaxEntries, 0.8f, Alloc);
+  return Table;
+}
+
+BranchCoverageMap &getBranchCoverageTable() {
+  static BranchCoverageAllocator Alloc;
+  static BranchCoverageMap Table(kCoverageMapMaxEntries, 0.8f, Alloc);
+  return Table;
+}
+
+bool markLineCovered(uint64_t line_id) {
+  auto Result = getLineCoverageTable().findOrConstruct(
+      line_id, [] { return static_cast<char>(0); });
+  char Prev =
+      Result.first->second.data.exchange(static_cast<char>(1), std::memory_order_relaxed);
+  return Prev == 0;
+}
+
+void recordBranchCoverage(uint64_t cid, bool taken) {
+  auto Result = getBranchCoverageTable().findOrConstruct(
+      cid, [] { return static_cast<char>(0); });
+  char Mask = taken ? static_cast<char>(0x1) : static_cast<char>(0x2);
+  Result.first->second.data.fetch_or(Mask, std::memory_order_relaxed);
+}
+
+} // namespace
+
 static inline void __solve_cond(dfsan_label label, uint8_t result,
                                 uint8_t add_nested, uint8_t loop_flag,
-                                uint32_t cid, void *addr) {
+                                uint64_t cid, void *addr) {
 
   if (__pipe_fd < 0)
     return;
@@ -77,7 +159,7 @@ static inline void __solve_cond(dfsan_label label, uint8_t result,
 }
 
 static inline void __send_ubi(dfsan_label label, uint64_t result,
-                              uint32_t cid, void *addr) {
+                              uint64_t cid, void *addr) {
   if (__pipe_fd < 0)
     return;
 
@@ -98,14 +180,8 @@ static inline void __send_ubi(dfsan_label label, uint64_t result,
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-_line_coverage(uint32_t line_id, uint8_t result, uint32_t cid) {
-  uint8_t *coverage = reinterpret_cast<uint8_t *>(LineCoverageAddr());
-  uint32_t byte_index = line_id >> 3;
-  uint8_t bit_index = line_id & 7;
-  uint8_t bit_mask = 1U << bit_index;
-  uint8_t *slot = coverage + byte_index;
-  uint8_t prev = __atomic_fetch_or(slot, bit_mask, __ATOMIC_RELAXED);
-  if (prev & bit_mask)
+_line_coverage(uint64_t line_id, uint8_t result, uint64_t cid) {
+  if (!markLineCovered(line_id))
     return;
 
   if (__pipe_fd < 0)
@@ -114,7 +190,8 @@ _line_coverage(uint32_t line_id, uint8_t result, uint32_t cid) {
   pipe_msg msg = {};
   msg.msg_type = cover_type;
   msg.id = cid;
-  msg.label = line_id;
+  msg.context = static_cast<uint32_t>(line_id >> 32);
+  msg.label = static_cast<uint32_t>(line_id & 0xffffffffu);
   msg.result = result;
 
   if (internal_write(__pipe_fd, &msg, sizeof(msg)) < 0) {
@@ -124,13 +201,13 @@ _line_coverage(uint32_t line_id, uint8_t result, uint32_t cid) {
 
 static struct switch_true_case {
   dfsan_label label;
-  uint32_t cid;
+  uint64_t cid;
 } __switch_true_case = {0};
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_cmp(dfsan_label op1, dfsan_label op2, uint32_t size,
                   uint32_t predicate,
-                  uint64_t c1, uint64_t c2, uint32_t cid) {
+                  uint64_t c1, uint64_t c2, uint64_t cid) {
   if (op1 == 0 && op2 == 0)
     return;
 
@@ -151,7 +228,7 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, uint32_t size,
     else return;
   }
 
-  AOUT("solving cmp: %u %u %u %d %lu %lu 0x%x @%p\n",
+  AOUT("solving cmp: %u %u %u %d %lu %lu 0x%" PRIx64 " @%p\n",
        op1, op2, size, predicate, c1, c2, cid, addr);
 
   // save info to a union table slot
@@ -170,18 +247,18 @@ __taint_trace_cmp(dfsan_label op1, dfsan_label op2, uint32_t size,
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__taint_trace_switch_end(uint32_t cid) {
+__taint_trace_switch_end(uint64_t cid) {
   if (__switch_true_case.label == 0) {
     return;
   } else if (__switch_true_case.cid != cid) {
-    AOUT("WARNING: switch end cid mismatch %u vs %u\n",
+    AOUT("WARNING: switch end cid mismatch %" PRIu64 " vs %" PRIu64 "\n",
          __switch_true_case.cid, cid);
     return;
   }
 
   void *addr = __builtin_return_address(0);
 
-  AOUT("solving switch end: %u 0x%x @%p\n",
+  AOUT("solving switch end: %u 0x%" PRIx64 " @%p\n",
        __switch_true_case.label, cid, addr);
 
   // solve the true case
@@ -190,7 +267,7 @@ __taint_trace_switch_end(uint32_t cid) {
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-__taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint32_t cid) {
+__taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint64_t cid) {
   if (label == 0) {
     // check for real loop exit
     if (!(((flag & FalseBranchLoopExit) && !r) ||
@@ -208,8 +285,8 @@ __taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint32_t cid) {
     else return;
   }
 
-  AOUT("solving cond: %u %u 0x%x 0x%x %p\n",
-       label, r, __taint_trace_callstack, cid, addr);
+  AOUT("solving cond: %u %u 0x%x 0x%" PRIx64 " %p\n",
+    label, r, __taint_trace_callstack, cid, addr);
 
   uint8_t add_nested = flag & UndefinedCheck ? 0 : 1;
   uint8_t loop_flag = flag & LoopFlagMask;
@@ -221,7 +298,7 @@ __taint_trace_cond(dfsan_label label, bool r, uint8_t flag, uint32_t cid) {
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE dfsan_label
 __taint_trace_select(dfsan_label cond_label, dfsan_label true_label,
                      dfsan_label false_label, uint8_t r, uint8_t true_op,
-                     uint8_t false_op, uint32_t cid) {
+                     uint8_t false_op, uint64_t cid) {
   if (cond_label == 0)
     return r ? true_label : false_label;
 
@@ -235,7 +312,7 @@ __taint_trace_select(dfsan_label cond_label, dfsan_label true_label,
     else return r ? true_label : false_label;
   }
 
-  AOUT("solving select: %u %u %u %u %u %u 0x%x @%p\n",
+  AOUT("solving select: %u %u %u %u %u %u 0x%" PRIx64 " @%p\n",
        cond_label, true_label, false_label, r, true_op, false_op, cid, addr);
 
   // check if it's actually a logical AND: select cond, label, false
@@ -270,7 +347,7 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr,
                   dfsan_label index_label, int64_t index,
                   uint64_t num_elems, uint64_t elem_size,
-                  int64_t current_offset, uint32_t cid) {
+                  int64_t current_offset, uint64_t cid) {
   if (index_label == 0)
     return;
 
@@ -304,6 +381,7 @@ __taint_trace_gep(dfsan_label ptr_label, uint64_t ptr,
     .instance_id = __instance_id,
     .addr = (uptr)addr,
     .context = __taint_trace_callstack,
+    .id = cid,
     .label = index_label, // just in case
     .result = (uint64_t)index
   };
