@@ -25,6 +25,7 @@
 #include <type_traits>
 #include <random>
 #include <thread>
+#include <cassert>
 
 #include "ScopeGuard.h"
 
@@ -33,24 +34,24 @@ namespace folly {
 using std::mt19937;
 using std::mt19937_64;
 
-uint32_t rand32(uint32_t max) {
+inline uint32_t rand32(uint32_t max) {
     static thread_local mt19937* generator = nullptr;
     if (!generator) {
         uint32_t seed = std::hash<std::thread::id>{}(std::this_thread::get_id());
         generator = new mt19937(seed);
     }
     std::uniform_int_distribution<uint32_t> distribution(0, max);
-    return distribution(generator);
+    return distribution(*generator);
 }
 
-uint64_t rand64(uint64_t max) {
+inline uint64_t rand64(uint64_t max) {
     static thread_local mt19937_64* generator = nullptr;
     if (!generator) {
         uint64_t seed = std::hash<std::thread::id>{}(std::this_thread::get_id());
         generator = new mt19937_64(seed);
     }
     std::uniform_int_distribution<uint64_t> distribution(0, max);
-    return distribution(generator);
+    return distribution(*generator);
 }
 
 #ifdef _MSC_VER

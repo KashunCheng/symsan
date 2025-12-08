@@ -17,7 +17,7 @@ RUN git clone --depth=1 --branch=v4.31c https://github.com/AFLplusplus/AFLpluspl
     cd /work && git clone https://github.com/msgpack/msgpack-c.git && \
     cd msgpack-c && \
     git checkout cpp-7.0.0 && \
-    cmake . && \
+    CC=clang-14 CXX=clang++-14 cmake . && \
     cmake --build . --target install
 
 RUN apt clean

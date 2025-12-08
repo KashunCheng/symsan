@@ -80,12 +80,40 @@
 #include <new>
 #include <type_traits>
 #include <utility>
+#include <stdexcept>
+#include <exception>
 using std::uncaught_exceptions;
+
+#define FOLLY_DECLVAL(...) static_cast<__VA_ARGS__ (*)() noexcept>(nullptr)()
+#define FOLLY_BUILTIN_EXPECT(exp, c) __builtin_expect(static_cast<bool>(exp), c)
+#define FOLLY_LIKELY(...) FOLLY_BUILTIN_EXPECT((__VA_ARGS__), 1)
 
 template<class T>
 constexpr std::add_const_t<T>& as_const(T& t) noexcept
 {
     return t;
+}
+
+template <
+    typename Try,
+    typename Catch,
+    typename... CatchA,
+    typename R = std::common_type_t<
+        decltype(FOLLY_DECLVAL(Try&&)()),
+        decltype(FOLLY_DECLVAL(Catch&&)(FOLLY_DECLVAL(CatchA&&)...))>>
+inline R
+catch_exception(Try&& t, Catch&& c, CatchA&&... a) noexcept(
+    noexcept(static_cast<Catch&&>(c)(static_cast<CatchA&&>(a)...))) {
+#if FOLLY_HAS_EXCEPTIONS
+  try {
+    return static_cast<Try&&>(t)();
+  } catch (...) {
+    return invoke_cold(static_cast<Catch&&>(c), static_cast<CatchA&&>(a)...);
+  }
+#else
+  [](auto&&...) {}(c, a...); // ignore
+  return static_cast<Try&&>(t)();
+#endif
 }
 
 // #include <folly/Portability.h>
@@ -262,7 +290,7 @@ class ScopeGuardForNewException {
   ScopeGuardForNewException(ScopeGuardForNewException&& other) = default;
 
   ~ScopeGuardForNewException() noexcept(ExecuteOnException) {
-    if (ExecuteOnException != (exceptionCounter_ < uncaught_exceptions())) {
+    if (ExecuteOnException != (exceptionCounter_ < std::uncaught_exceptions())) {
       guard_.dismiss();
     }
   }
@@ -272,7 +300,7 @@ class ScopeGuardForNewException {
   void operator delete(void*) = delete;
 
   ScopeGuardImpl<FunctionType, ExecuteOnException> guard_;
-  int exceptionCounter_{uncaught_exceptions()};
+  int exceptionCounter_{std::uncaught_exceptions()};
 };
 
 /**
