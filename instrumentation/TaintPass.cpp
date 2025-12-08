@@ -18,8 +18,11 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/DepthFirstIterator.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/None.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -63,7 +66,10 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/DJB.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/SpecialCaseList.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
@@ -75,11 +81,14 @@
 #include <cstdint>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <set>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
+#include <msgpack.hpp>
 
 using namespace llvm;
 
@@ -179,6 +188,11 @@ static cl::opt<bool> ClSolveUB(
     "taint-solve-ub",
     cl::desc("Solve undefined behaviours."),
     cl::Hidden, cl::init(false));
+
+static cl::opt<std::string> ClLineCoverageMap(
+    "taint-line-coverage-map",
+    cl::desc("Path to write the msgpack line coverage mapping."),
+    cl::Hidden, cl::init(""));
 
 static StringRef getGlobalTypeString(const GlobalValue &G) {
   // Types of GlobalVariables are always pointer types.
@@ -3027,6 +3041,46 @@ void TaintVisitor::visitBranchInst(BranchInst &BR) {
 }
 
 namespace {
+
+struct LineLocationKey {
+  const DIFile *File;
+  unsigned Line;
+};
+
+struct LineLocationKeyInfo {
+  static inline LineLocationKey getEmptyKey() {
+    return {reinterpret_cast<const DIFile *>(-1),
+            std::numeric_limits<unsigned>::max()};
+  }
+  static inline LineLocationKey getTombstoneKey() {
+    return {reinterpret_cast<const DIFile *>(-2),
+            std::numeric_limits<unsigned>::max() - 1};
+  }
+  static unsigned getHashValue(const LineLocationKey &Key) {
+    return hash_combine(Key.File, Key.Line);
+  }
+  static bool isEqual(const LineLocationKey &LHS,
+                      const LineLocationKey &RHS) {
+    return LHS.File == RHS.File && LHS.Line == RHS.Line;
+  }
+};
+
+struct LineEntry {
+  std::string File;
+  unsigned Line;
+};
+
+class LineCoveragePass : public PassInfoMixin<LineCoveragePass> {
+public:
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &);
+
+private:
+  static std::string buildSourcePath(const DILocation *Loc);
+  static std::string deriveOutputPath(const Module &M);
+  static bool writeMappingFile(const Module &M,
+                               const std::vector<LineEntry> &Entries);
+};
+
 class TaintPass : public PassInfoMixin<TaintPass> {
 private:
   std::vector<std::string> ABIListFiles;
@@ -3044,7 +3098,197 @@ public:
 
   static bool isRequired() { return true; }
 };
+
+PreservedAnalyses LineCoveragePass::run(Module &M,
+                                        ModuleAnalysisManager &) {
+  LLVMContext &Ctx = M.getContext();
+  IntegerType *Int32Ty = Type::getInt32Ty(Ctx);
+  IntegerType *Int8Ty = Type::getInt8Ty(Ctx);
+  DenseMap<LineLocationKey, uint32_t, LineLocationKeyInfo> LineIds;
+  std::vector<LineEntry> Entries;
+  DenseSet<uint32_t> CondLines;
+
+  auto GetLineId = [&](DILocation *Loc) -> Optional<uint32_t> {
+    if (!Loc)
+      return None;
+    LineLocationKey Key{Loc->getFile(), Loc->getLine()};
+    auto It = LineIds.find(Key);
+    if (It != LineIds.end())
+      return It->second;
+    uint32_t NewId = Entries.size();
+    LineIds.try_emplace(Key, NewId);
+    Entries.push_back({buildSourcePath(Loc), Loc->getLine()});
+    return NewId;
+  };
+
+  for (Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    for (BasicBlock &BB : F) {
+      for (Instruction &I : BB) {
+        DILocation *Loc = I.getDebugLoc();
+        if (!Loc)
+          continue;
+        Optional<uint32_t> LineId = GetLineId(Loc);
+        if (!LineId)
+          continue;
+        auto *CB = dyn_cast<CallBase>(&I);
+        if (!CB)
+          continue;
+        Function *Target =
+            dyn_cast<Function>(CB->getCalledOperand()->stripPointerCasts());
+        if (!Target)
+          continue;
+        if (Target->getName() == "__taint_trace_cond")
+          CondLines.insert(*LineId);
+      }
+    }
+  }
+
+  bool Instrumented = false;
+  ConstantInt *ZeroResult = ConstantInt::get(Int8Ty, 0);
+  ConstantInt *ZeroId = ConstantInt::get(Int32Ty, 0);
+  FunctionCallee LineCovFn;
+  auto GetLineCoverageFn = [&]() -> FunctionCallee {
+    if (!LineCovFn) {
+      FunctionType *FnTy =
+          FunctionType::get(Type::getVoidTy(Ctx), {Int32Ty, Int8Ty, Int32Ty},
+                            /*isVarArg=*/false);
+      LineCovFn = M.getOrInsertFunction("_line_coverage", FnTy);
+    }
+    return LineCovFn;
+  };
+
+  for (Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    for (BasicBlock &BB : F) {
+      SmallDenseSet<uint32_t, 8> SeenLines;
+      for (Instruction &I : BB) {
+        CallBase *CB = dyn_cast<CallBase>(&I);
+        if (CB) {
+          if (Function *Target = dyn_cast<Function>(
+                  CB->getCalledOperand()->stripPointerCasts())) {
+            if (Target->getName() == "_line_coverage")
+              continue;
+          }
+        }
+
+        DILocation *Loc = I.getDebugLoc();
+        if (!Loc)
+          continue;
+
+        Optional<uint32_t> LineId = GetLineId(Loc);
+        if (!LineId)
+          continue;
+
+        if (CB) {
+          Function *Target =
+              dyn_cast<Function>(CB->getCalledOperand()->stripPointerCasts());
+          if (Target && Target->getName() == "__taint_trace_cond") {
+            auto InsertIt = std::next(BasicBlock::iterator(CB));
+            IRBuilder<> IRB(Ctx);
+            if (InsertIt == BB.end())
+              IRB.SetInsertPoint(&BB, InsertIt);
+            else
+              IRB.SetInsertPoint(&*InsertIt);
+            Value *ResultVal = CB->getArgOperand(1);
+            if (ResultVal->getType() != Int8Ty)
+              ResultVal = IRB.CreateIntCast(ResultVal, Int8Ty, /*isSigned=*/false);
+            Value *CidVal = CB->getArgOperand(3);
+            if (CidVal->getType() != Int32Ty)
+              CidVal = IRB.CreateIntCast(CidVal, Int32Ty, /*isSigned=*/false);
+            Value *LineConst = ConstantInt::get(Int32Ty, *LineId);
+            CallInst *CovCall =
+                IRB.CreateCall(GetLineCoverageFn(),
+                               {LineConst, ResultVal, CidVal});
+            CovCall->setDebugLoc(Loc);
+            Instrumented = true;
+            SeenLines.insert(*LineId);
+            continue;
+          }
+        }
+
+        if (CondLines.count(*LineId))
+          continue;
+        if (!SeenLines.insert(*LineId).second)
+          continue;
+
+        Instruction *InsertBefore = &I;
+        if (isa<PHINode>(&I)) {
+          InsertBefore = I.getParent()->getFirstNonPHI();
+        } else if (isa<LandingPadInst>(&I)) {
+          InsertBefore = I.getNextNode();
+        }
+        if (!InsertBefore)
+          continue;
+
+        IRBuilder<> IRB(InsertBefore);
+        Value *LineConst = ConstantInt::get(Int32Ty, *LineId);
+        CallInst *CovCall = IRB.CreateCall(
+            GetLineCoverageFn(), {LineConst, ZeroResult, ZeroId});
+        CovCall->setDebugLoc(Loc);
+        Instrumented = true;
+      }
+    }
+  }
+
+  writeMappingFile(M, Entries);
+  return Instrumented ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
+
+std::string LineCoveragePass::buildSourcePath(const DILocation *Loc) {
+  if (!Loc)
+    return "<unknown>";
+  StringRef Filename = Loc->getFilename();
+  if (Filename.empty())
+    return "<unknown>";
+  if (sys::path::is_absolute(Filename))
+    return Filename.str();
+  StringRef Directory = Loc->getDirectory();
+  if (Directory.empty())
+    return Filename.str();
+  SmallString<256> FullPath(Directory);
+  sys::path::append(FullPath, Filename);
+  return FullPath.str().str();
+}
+
+std::string LineCoveragePass::deriveOutputPath(const Module &M) {
+  if (!ClLineCoverageMap.empty())
+    return ClLineCoverageMap;
+  SmallString<256> Base(sys::path::filename(M.getModuleIdentifier()));
+  if (Base.empty())
+    Base = "module";
+  sys::path::replace_extension(Base, ".linecov.msgpack");
+  return Base.str().str();
+}
+
+bool LineCoveragePass::writeMappingFile(
+    const Module &M, const std::vector<LineEntry> &Entries) {
+  std::string OutputPath = deriveOutputPath(M);
+  msgpack::sbuffer Buffer;
+  msgpack::packer<msgpack::sbuffer> Packer(&Buffer);
+  Packer.pack_map(Entries.size());
+  for (uint32_t Id = 0, End = Entries.size(); Id < End; ++Id) {
+    Packer.pack_uint32(Id);
+    Packer.pack_array(2);
+    Packer.pack(Entries[Id].File);
+    Packer.pack_uint32(Entries[Id].Line);
+  }
+
+  std::error_code EC;
+  raw_fd_ostream OS(OutputPath, EC, sys::fs::OF_None);
+  if (EC) {
+    errs() << "LineCoveragePass: failed to open " << OutputPath << ": "
+           << EC.message() << "\n";
+    return false;
+  }
+
+  OS.write(Buffer.data(), Buffer.size());
+  return true;
+}
+
+} // namespace
 
 extern "C" ::llvm::PassPluginLibraryInfo LLVM_ATTRIBUTE_WEAK
 llvmGetPassPluginInfo() {
@@ -3053,12 +3297,17 @@ llvmGetPassPluginInfo() {
             PB.registerOptimizerLastEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel OL) {
                   MPM.addPass(TaintPass());
+                  MPM.addPass(LineCoveragePass());
                 });
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, ModulePassManager &MPM,
                    ArrayRef<PassBuilder::PipelineElement>) {
                   if (Name == "taint") {
                     MPM.addPass(TaintPass());
+                    return true;
+                  }
+                  if (Name == "line-coverage") {
+                    MPM.addPass(LineCoveragePass());
                     return true;
                   }
                   return false;

@@ -233,6 +233,7 @@ enum pipe_msg_type {
   memcmp_type = 2,
   fsize_type = 3,
   memerr_type = 4,
+  cover_type = 5,
 };
 
 static const uint8_t TrueBranchLoopLatch = 0x8;

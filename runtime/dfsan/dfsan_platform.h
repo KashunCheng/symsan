@@ -18,7 +18,8 @@ namespace __dfsan {
 
 #if defined(__x86_64__)
 struct Mapping {
-  static const uptr kShadowAddr = 0x10000;
+  static const uptr kKernelAddr = 0x10000;
+  static const uptr kShadowAddr = 0x100000;
   static const uptr kHashTableAddr = 0x400000000000;
   static const uptr kUnionTableAddr = 0x400100000000;
   static const uptr kAppAddr = 0x700000040000;
@@ -27,7 +28,8 @@ struct Mapping {
 };
 #elif defined(__mips64)
 struct Mapping {
-  static const uptr kShadowAddr = 0x10000;
+  static const uptr kKernelAddr = 0x10000;
+  static const uptr kShadowAddr = 0x100000;
   static const uptr kHashTableAddr = 0x2000000000;
   static const uptr kUnionTableAddr = 0x2100000000;
   static const uptr kAppAddr = 0xF000008000;
@@ -36,7 +38,8 @@ struct Mapping {
 };
 #elif defined(__aarch64__)
 struct Mapping39 {
-  static const uptr kShadowAddr = 0x10000;
+  static const uptr kKernelAddr = 0x10000;
+  static const uptr kShadowAddr = 0x100000;
   static const uptr kHashTableAddr = 0x1000000000;
   static const uptr kUnionTableAddr = 0x1100000000;
   static const uptr kAppAddr = 0x7000008000;
@@ -45,7 +48,8 @@ struct Mapping39 {
 };
 
 struct Mapping42 {
-  static const uptr kShadowAddr = 0x10000;
+  static const uptr kKernelAddr = 0x10000;
+  static const uptr kShadowAddr = 0x100000;
   static const uptr kHashTableAddr = 0x8000000000;
   static const uptr kUnionTableAddr = 0x8100000000;
   static const uptr kAppAddr = 0x3ff00008000;
@@ -54,7 +58,8 @@ struct Mapping42 {
 };
 
 struct Mapping48 {
-  static const uptr kShadowAddr = 0x10000;
+  static const uptr kKernelAddr = 0x10000;
+  static const uptr kShadowAddr = 0x100000;
   static const uptr kHashTableAddr = 0x8000000000;
   static const uptr kUnionTableAddr = 0x8100000000;
   static const uptr kAppAddr = 0xffff00008000;
@@ -69,6 +74,7 @@ extern int vmaSize;
 #endif
 
 enum MappingType {
+  MAPPING_LINE_COV_ADDR,
   MAPPING_SHADOW_ADDR,
   MAPPING_UNION_TABLE_ADDR,
   MAPPING_APP_ADDR,
@@ -80,6 +86,7 @@ enum MappingType {
 template<typename Mapping, int Type>
 uptr MappingImpl(void) {
   switch (Type) {
+    case MAPPING_LINE_COV_ADDR: return Mapping::kKernelAddr;
     case MAPPING_SHADOW_ADDR: return Mapping::kShadowAddr;
     case MAPPING_UNION_TABLE_ADDR: return Mapping::kUnionTableAddr;
     case MAPPING_APP_ADDR: return Mapping::kAppAddr;
@@ -102,6 +109,11 @@ uptr MappingArchImpl(void) {
 #else
   return MappingImpl<Mapping, Type>();
 #endif
+}
+
+ALWAYS_INLINE
+uptr LineCoverageAddr() {
+  return MappingArchImpl<MAPPING_LINE_COV_ADDR>();
 }
 
 ALWAYS_INLINE

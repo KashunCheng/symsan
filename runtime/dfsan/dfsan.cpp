@@ -94,7 +94,7 @@ SANITIZER_INTERFACE_ATTRIBUTE uptr __dfsan_shadow_ptr_mask;
 // |                    |
 // |    union table     |
 // |                    |
-// +--------------------+ 0x400100000000 (kUnionTableAddr)
+// +--------------------+ 0x400300000000 (kUnionTableAddr)
 // |    hash table      |
 // +--------------------+ 0x400000000000 (kHashTableAddr)
 // |   shadow memory    |
@@ -1217,11 +1217,14 @@ static void dfsan_init(int argc, char **argv, char **envp) {
   ::InitializePlatformEarly();
   uptr ret;
   int err;
-  ret = MmapFixedSuperNoReserve(ShadowAddr(), UnionTableAddr() - ShadowAddr());
+  ret = MmapFixedSuperNoReserve(LineCoverageAddr(), UnionTableAddr() - LineCoverageAddr());
   if (internal_iserror(ret, &err)) {
     Printf("FATAL: error mapping shadow %s\n", strerror(err));
     Die();
   }
+
+  // init line coverge
+  internal_memset((char*) LineCoverageAddr(), 0, ShadowAddr() - LineCoverageAddr());
 
   // init union table
   __dfsan_label_info = (dfsan_label_info *)UnionTableAddr();

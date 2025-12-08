@@ -97,6 +97,31 @@ static inline void __send_ubi(dfsan_label label, uint64_t result,
   }
 }
 
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+_line_coverage(uint32_t line_id, uint8_t result, uint32_t cid) {
+  uint8_t *coverage = reinterpret_cast<uint8_t *>(LineCoverageAddr());
+  uint32_t byte_index = line_id >> 3;
+  uint8_t bit_index = line_id & 7;
+  uint8_t bit_mask = 1U << bit_index;
+  uint8_t *slot = coverage + byte_index;
+  uint8_t prev = __atomic_fetch_or(slot, bit_mask, __ATOMIC_RELAXED);
+  if (prev & bit_mask)
+    return;
+
+  if (__pipe_fd < 0)
+    return;
+
+  pipe_msg msg = {};
+  msg.msg_type = cover_type;
+  msg.id = cid;
+  msg.label = line_id;
+  msg.result = result;
+
+  if (internal_write(__pipe_fd, &msg, sizeof(msg)) < 0) {
+    Die();
+  }
+}
+
 static struct switch_true_case {
   dfsan_label label;
   uint32_t cid;
