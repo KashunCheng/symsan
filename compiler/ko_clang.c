@@ -248,6 +248,15 @@ static void edit_params(u32 argc, char **argv) {
     cc_params[0] = alt_cc ? alt_cc : "clang";
   }
 
+  cc_params[cc_par_cnt++] = "-Xclang";
+  cc_params[cc_par_cnt++] = "-load";
+  cc_params[cc_par_cnt++] = "-Xclang";
+  cc_params[cc_par_cnt++] = alloc_printf("%s/libIfInstrument.so", obj_path);
+  cc_params[cc_par_cnt++] = "-Xclang";
+  cc_params[cc_par_cnt++] = "-add-plugin";
+  cc_params[cc_par_cnt++] = "-Xclang";
+  cc_params[cc_par_cnt++] = "if-instrument";
+
   maybe_assembler = check_if_assembler(argc, argv);
 
   use_native_cxx = getenv("KO_USE_NATIVE_LIBCXX") ? 1 : 0;

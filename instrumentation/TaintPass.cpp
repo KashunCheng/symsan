@@ -3151,7 +3151,7 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
       FunctionType *FnTy =
           FunctionType::get(Type::getVoidTy(Ctx), {Int64Ty, Int8Ty, Int64Ty},
                             /*isVarArg=*/false);
-      LineCovFn = M.getOrInsertFunction("_line_coverage", FnTy);
+      LineCovFn = M.getOrInsertFunction("__line_coverage", FnTy);
     }
     return LineCovFn;
   };
@@ -3166,7 +3166,7 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
         if (CB) {
           if (Function *Target = dyn_cast<Function>(
                   CB->getCalledOperand()->stripPointerCasts())) {
-            if (Target->getName() == "_line_coverage")
+            if (Target->getName() == "__line_coverage")
               continue;
           }
         }

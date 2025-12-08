@@ -33,6 +33,7 @@ set(SYMSAN_LIB_DIR "lib/symsan")
 
 add_subdirectory(compiler)
 add_subdirectory(instrumentation)
+add_subdirectory(instrumentation_clang)
 add_subdirectory(runtime)
 add_subdirectory(wrappers)
 add_subdirectory(parsers)

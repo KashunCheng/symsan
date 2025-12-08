@@ -180,7 +180,7 @@ static inline void __send_ubi(dfsan_label label, uint64_t result,
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
-_line_coverage(uint64_t line_id, uint8_t result, uint64_t cid) {
+__line_coverage(uint64_t line_id, uint8_t result, uint64_t cid) {
   if (!markLineCovered(line_id))
     return;
 

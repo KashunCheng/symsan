@@ -10,7 +10,7 @@ WORKDIR /work
 COPY . /work/symsan
 
 RUN apt-get update
-RUN apt-get install -y cmake llvm-14 clang-14 libc++-14-dev libc++abi-14-dev libunwind-14-dev \
+RUN apt-get install -y cmake llvm-14 clang-14 libclang-14-dev libc++-14-dev libc++abi-14-dev libunwind-14-dev \
     python3-minimal python-is-python3 zlib1g-dev git joe libprotobuf-dev libz3-dev libgoogle-perftools-dev libboost-container-dev python3-dev
 RUN git clone --depth=1 --branch=v4.31c https://github.com/AFLplusplus/AFLplusplus /work/aflpp && \
     cd /work/aflpp && make PERFORMANCE=1 LLVM_CONFIG=llvm-config-14 NO_NYX=1 source-only -j4 && make install && \
