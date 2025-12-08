@@ -51,6 +51,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/MDBuilder.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
@@ -3061,6 +3062,75 @@ void TaintVisitor::visitBranchInst(BranchInst &BR) {
 
 namespace {
 
+static constexpr char BranchConditionMetadataName[] =
+    "symsan.branch.condition";
+
+class RecordIfRemovalPass : public PassInfoMixin<RecordIfRemovalPass> {
+public:
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &);
+
+private:
+  static void annotateCondition(Value *Cond);
+};
+
+PreservedAnalyses RecordIfRemovalPass::run(Module &M,
+                                           ModuleAnalysisManager &) {
+  Function *RecordIfFn = M.getFunction("__record_if");
+  if (!RecordIfFn)
+    return PreservedAnalyses::all();
+
+  bool Changed = false;
+  for (Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    for (BasicBlock &BB : F) {
+      for (auto It = BB.begin(), End = BB.end(); It != End;) {
+        Instruction &Inst = *It++;
+        auto *CB = dyn_cast<CallBase>(&Inst);
+        if (!CB)
+          continue;
+        Value *CalledValue = CB->getCalledOperand();
+        if (!CalledValue)
+          continue;
+        Function *Target =
+            dyn_cast<Function>(CalledValue->stripPointerCasts());
+        if (!Target || Target != RecordIfFn)
+          continue;
+        if (CB->arg_size() != 1)
+          continue;
+
+        Value *Cond = CB->getArgOperand(0);
+        annotateCondition(Cond);
+        CB->replaceAllUsesWith(Cond);
+        CB->eraseFromParent();
+        Changed = true;
+      }
+    }
+  }
+
+  if (RecordIfFn->use_empty() && RecordIfFn->isDeclaration()) {
+    RecordIfFn->eraseFromParent();
+    Changed = true;
+  }
+
+  return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+}
+
+void RecordIfRemovalPass::annotateCondition(Value *Cond) {
+  auto *CondInst = dyn_cast<Instruction>(Cond);
+  if (!CondInst)
+    return;
+  if (CondInst->getMetadata(BranchConditionMetadataName))
+    return;
+
+  LLVMContext &Ctx = CondInst->getContext();
+  Metadata *Ops[] = {
+      MDString::get(Ctx, "if.true"),
+      ConstantAsMetadata::get(ConstantInt::getTrue(Ctx)),
+  };
+  CondInst->setMetadata(BranchConditionMetadataName, MDNode::get(Ctx, Ops));
+}
+
 struct LineEntry {
   uint64_t Id;
   std::string File;
@@ -3277,13 +3347,19 @@ llvmGetPassPluginInfo() {
           [](PassBuilder &PB) {
             PB.registerOptimizerLastEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel OL) {
+                  MPM.addPass(RecordIfRemovalPass());
                   MPM.addPass(TaintPass());
                   MPM.addPass(LineCoveragePass());
                 });
             PB.registerPipelineParsingCallback(
                 [](StringRef Name, ModulePassManager &MPM,
                    ArrayRef<PassBuilder::PipelineElement>) {
+                  if (Name == "record-if-cleanup") {
+                    MPM.addPass(RecordIfRemovalPass());
+                    return true;
+                  }
                   if (Name == "taint") {
+                    MPM.addPass(RecordIfRemovalPass());
                     MPM.addPass(TaintPass());
                     return true;
                   }
