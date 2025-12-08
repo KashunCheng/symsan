@@ -443,19 +443,22 @@ int main(int argc, char* const argv[]) {
       case cover_type: {
         uint64_t line_id =
             (static_cast<uint64_t>(msg.context) << 32) | msg.label;
+        bool is_symbolic = (msg.flags & F_COVER_SYMBOLIC) != 0;
         const LineCovEntry *entry = lookup_linecov_entry(line_id);
         if (entry) {
-          AOUT("line coverage: %s:%u cid=%llu result=%llu, line_id=%llu\n",
+          AOUT("line coverage: %s:%u cid=%llu result=%llu symbolic=%d, "
+               "line_id=%llu\n",
                entry->file.c_str(), entry->line,
                (unsigned long long)msg.id,
                (unsigned long long)msg.result,
+               is_symbolic,
                (unsigned long long)line_id);
         } else {
-          AOUT("line coverage: 0x%llx cid=%llu result=%llu "
+          AOUT("line coverage: 0x%llx cid=%llu result=%llu symbolic=%d "
                "(mapping missing)\n",
                (unsigned long long)line_id,
                (unsigned long long)msg.id,
-               (unsigned long long)msg.result);
+               (unsigned long long)msg.result, is_symbolic);
         }
         break;
       }

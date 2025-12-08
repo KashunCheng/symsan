@@ -3145,6 +3145,7 @@ private:
   static std::string deriveOutputPath(const Module &M);
   static bool writeMappingFile(const Module &M,
                                const std::vector<LineEntry> &Entries);
+  static Instruction *getBranchConditionInst(CallBase &CB);
 };
 
 class TaintPass : public PassInfoMixin<TaintPass> {
@@ -3168,9 +3169,8 @@ public:
 PreservedAnalyses LineCoveragePass::run(Module &M,
                                         ModuleAnalysisManager &) {
   LLVMContext &Ctx = M.getContext();
-  IntegerType *Int32Ty = Type::getInt32Ty(Ctx);
   IntegerType *Int64Ty = Type::getInt64Ty(Ctx);
-  IntegerType *Int8Ty = Type::getInt8Ty(Ctx);
+  IntegerType *Int1Ty = Type::getInt1Ty(Ctx);
   DenseSet<uint64_t> KnownLines;
   std::vector<LineEntry> Entries;
   DenseSet<uint64_t> CondLines;
@@ -3206,21 +3206,24 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
             dyn_cast<Function>(CB->getCalledOperand()->stripPointerCasts());
         if (!Target)
           continue;
-        if (Target->getName() == "__taint_trace_cond")
-          CondLines.insert(*LineId);
+        if (Target->getName() == "__taint_trace_cond") {
+          if (getBranchConditionInst(*CB))
+            CondLines.insert(*LineId);
+        }
       }
     }
   }
 
   bool Instrumented = false;
-  ConstantInt *ZeroResult = ConstantInt::get(Int8Ty, 0);
+  ConstantInt *ZeroResult = ConstantInt::get(Int1Ty, 0);
+  ConstantInt *ZeroSymbolic = ConstantInt::get(Int1Ty, 0);
   ConstantInt *ZeroId = ConstantInt::get(Int64Ty, 0);
   FunctionCallee LineCovFn;
   auto GetLineCoverageFn = [&]() -> FunctionCallee {
     if (!LineCovFn) {
-      FunctionType *FnTy =
-          FunctionType::get(Type::getVoidTy(Ctx), {Int64Ty, Int8Ty, Int64Ty},
-                            /*isVarArg=*/false);
+      FunctionType *FnTy = FunctionType::get(
+          Type::getVoidTy(Ctx), {Int64Ty, Int1Ty, Int1Ty, Int64Ty},
+          /*isVarArg=*/false);
       LineCovFn = M.getOrInsertFunction("__line_coverage", FnTy);
     }
     return LineCovFn;
@@ -3253,22 +3256,28 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
           Function *Target =
               dyn_cast<Function>(CB->getCalledOperand()->stripPointerCasts());
           if (Target && Target->getName() == "__taint_trace_cond") {
+            Instruction *CondInst = getBranchConditionInst(*CB);
+            if (!CondInst)
+              continue;
             auto InsertIt = std::next(BasicBlock::iterator(CB));
             IRBuilder<> IRB(Ctx);
             if (InsertIt == BB.end())
               IRB.SetInsertPoint(&BB, InsertIt);
             else
               IRB.SetInsertPoint(&*InsertIt);
-            Value *ResultVal = CB->getArgOperand(1);
-            if (ResultVal->getType() != Int8Ty)
-              ResultVal = IRB.CreateIntCast(ResultVal, Int8Ty, /*isSigned=*/false);
+            Value *ResultVal = CondInst;
+            if (ResultVal->getType() != Int1Ty)
+              ResultVal = IRB.CreateICmpNE(
+                  ResultVal, ConstantInt::get(ResultVal->getType(), 0));
             Value *CidVal = CB->getArgOperand(3);
             if (CidVal->getType() != Int64Ty)
               CidVal = IRB.CreateIntCast(CidVal, Int64Ty, /*isSigned=*/false);
             Value *LineConst = ConstantInt::get(Int64Ty, *LineId);
+            Value *SymbolicVal =
+                IRB.CreateIsNotNull(CB->getArgOperand(0), "symsan.branch.symbolic");
             CallInst *CovCall =
                 IRB.CreateCall(GetLineCoverageFn(),
-                               {LineConst, ResultVal, CidVal});
+                               {LineConst, ResultVal, SymbolicVal, CidVal});
             CovCall->setDebugLoc(Loc);
             Instrumented = true;
             SeenLines.insert(*LineId);
@@ -3293,7 +3302,7 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
         IRBuilder<> IRB(InsertBefore);
         Value *LineConst = ConstantInt::get(Int64Ty, *LineId);
         CallInst *CovCall = IRB.CreateCall(
-            GetLineCoverageFn(), {LineConst, ZeroResult, ZeroId});
+            GetLineCoverageFn(), {LineConst, ZeroResult, ZeroSymbolic, ZeroId});
         CovCall->setDebugLoc(Loc);
         Instrumented = true;
       }
@@ -3302,6 +3311,18 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
 
   writeMappingFile(M, Entries);
   return Instrumented ? PreservedAnalyses::none() : PreservedAnalyses::all();
+}
+
+Instruction *LineCoveragePass::getBranchConditionInst(CallBase &CB) {
+  if (CB.arg_size() < 2)
+    return nullptr;
+  Value *CondVal = CB.getArgOperand(1);
+  auto *CondInst = dyn_cast<Instruction>(CondVal);
+  if (!CondInst)
+    return nullptr;
+  if (!CondInst->getMetadata(BranchConditionMetadataName))
+    return nullptr;
+  return CondInst;
 }
 
 std::string LineCoveragePass::deriveOutputPath(const Module &M) {
