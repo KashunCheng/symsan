@@ -1,0 +1,4 @@
+out/
+*.linecov.msgpack
+*.bin
+dummy

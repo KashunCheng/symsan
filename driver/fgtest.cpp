@@ -15,6 +15,11 @@ extern "C" {
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <string>
+#include <dirent.h>
+#include <exception>
+#include <fstream>
+#include <msgpack.hpp>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +54,149 @@ static z3::context __z3_context;
 
 // z3parser
 symsan::Z3ParserSolver *__z3_parser = nullptr;
+
+struct LineCovEntry {
+  std::string file;
+  uint32_t line;
+};
+
+static std::unordered_map<uint64_t, LineCovEntry> __linecov_entries;
+static bool __linecov_loaded = false;
+
+static bool has_linecov_suffix(const char *name) {
+  static const char suffix[] = ".linecov.msgpack";
+  size_t len = strlen(name);
+  size_t suffix_len = sizeof(suffix) - 1;
+  if (len < suffix_len)
+    return false;
+  return strcmp(name + len - suffix_len, suffix) == 0;
+}
+
+static std::string make_linecov_path(const std::string &dir, const char *name) {
+  if (dir.empty() || dir == ".")
+    return std::string(name);
+  if (dir.back() == '/')
+    return dir + name;
+  return dir + "/" + name;
+}
+
+static const LineCovEntry *lookup_linecov_entry(uint64_t line_id) {
+  auto it = __linecov_entries.find(line_id);
+  if (it == __linecov_entries.end())
+    return nullptr;
+  return &it->second;
+}
+
+static bool load_linecov_file(const std::string &path) {
+  std::ifstream input(path, std::ios::binary | std::ios::ate);
+  if (!input.is_open())
+    return false;
+  std::streamsize size = input.tellg();
+  if (size <= 0)
+    return false;
+  input.seekg(0, std::ios::beg);
+  std::vector<char> buffer(static_cast<size_t>(size));
+  if (!input.read(buffer.data(), size))
+    return false;
+  try {
+    msgpack::object_handle handle =
+        msgpack::unpack(buffer.data(), buffer.size());
+    msgpack::object obj = handle.get();
+    if (obj.type != msgpack::type::MAP)
+      return false;
+    auto *pairs = obj.via.map.ptr;
+    for (uint32_t i = 0; i < obj.via.map.size; ++i) {
+      uint64_t line_id = 0;
+      pairs[i].key.convert(line_id);
+      msgpack::object &val = pairs[i].val;
+      if (val.type != msgpack::type::ARRAY || val.via.array.size < 2)
+        continue;
+      std::string file;
+      val.via.array.ptr[0].convert(file);
+      uint32_t line = 0;
+      val.via.array.ptr[1].convert(line);
+      __linecov_entries[line_id] = {std::move(file), line};
+    }
+    AOUT("loaded %u line coverage entries from %s\n",
+         obj.via.map.size, path.c_str());
+  } catch (const std::exception &e) {
+    fprintf(stderr, "Failed to parse %s: %s\n", path.c_str(), e.what());
+    return false;
+  }
+  return true;
+}
+
+static void scan_linecov_dir(const std::string &dir) {
+  DIR *d = opendir(dir.c_str());
+  if (!d)
+    return;
+  struct dirent *ent;
+  while ((ent = readdir(d)) != nullptr) {
+    if (ent->d_name[0] == '.')
+      continue;
+    if (!has_linecov_suffix(ent->d_name))
+      continue;
+    std::string path = make_linecov_path(dir, ent->d_name);
+    load_linecov_file(path);
+  }
+  closedir(d);
+}
+
+static void load_linecov_mappings(const char *program_path) {
+  if (__linecov_loaded)
+    return;
+  __linecov_loaded = true;
+
+  std::vector<std::string> dirs;
+  dirs.emplace_back(".");
+  if (program_path) {
+    std::string bin_path(program_path);
+    auto pos = bin_path.find_last_of('/');
+    if (pos != std::string::npos) {
+      std::string dir = bin_path.substr(0, pos);
+      if (dir.empty())
+        dir = "/";
+      dirs.emplace_back(dir);
+    }
+  }
+
+  std::unordered_set<std::string> visited;
+  for (const auto &dir : dirs) {
+    if (dir.empty())
+      continue;
+    if (!visited.insert(dir).second)
+      continue;
+    scan_linecov_dir(dir);
+  }
+}
+
+static const char *msg_type_str(uint16_t type) {
+  switch (type) {
+    case cond_type:
+      return "cond";
+    case gep_type:
+      return "gep";
+    case memcmp_type:
+      return "memcmp";
+    case fsize_type:
+      return "file-size";
+    case memerr_type:
+      return "memerr";
+    case cover_type:
+      return "cover";
+    default:
+      return "unknown";
+  }
+}
+
+static void pretty_print_msg(const pipe_msg &msg) {
+  AOUT("msg: type=%s(%u) flags=0x%x inst=%u ctx=%u addr=%p id=%llu "
+       "label=%u result=%llu\n",
+       msg_type_str(msg.msg_type), msg.msg_type, msg.flags, msg.instance_id,
+       msg.context, (void *)msg.addr,
+       (unsigned long long)msg.id, msg.label,
+       (unsigned long long)msg.result);
+}
 
 static void generate_input(symsan::Z3ParserSolver::solution_t &solutions) {
   char path[PATH_MAX];
@@ -242,12 +390,15 @@ int main(int argc, char* const argv[]) {
     exit(1);
   }
 
+  load_linecov_mappings(program);
+
   pipe_msg msg;
   gep_msg gmsg;
   size_t msg_size;
   memcmp_msg *mmsg = nullptr;
 
   while (symsan_read_event(&msg, sizeof(msg), 0) > 0) {
+    pretty_print_msg(msg);
     // solve constraints
     switch (msg.msg_type) {
       case cond_type:
@@ -289,6 +440,25 @@ int main(int argc, char* const argv[]) {
         break;
       case fsize_type:
         break;
+      case cover_type: {
+        uint64_t line_id =
+            (static_cast<uint64_t>(msg.context) << 32) | msg.label;
+        const LineCovEntry *entry = lookup_linecov_entry(line_id);
+        if (entry) {
+          AOUT("line coverage: %s:%u cid=%llu result=%llu, line_id=%llu\n",
+               entry->file.c_str(), entry->line,
+               (unsigned long long)msg.id,
+               (unsigned long long)msg.result,
+               (unsigned long long)line_id);
+        } else {
+          AOUT("line coverage: 0x%llx cid=%llu result=%llu "
+               "(mapping missing)\n",
+               (unsigned long long)line_id,
+               (unsigned long long)msg.id,
+               (unsigned long long)msg.result);
+        }
+        break;
+      }
       default:
         break;
     }
@@ -297,4 +467,3 @@ int main(int argc, char* const argv[]) {
   symsan_destroy();
   exit(0);
 }
-
