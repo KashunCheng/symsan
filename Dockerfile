@@ -11,14 +11,24 @@ COPY . /work/symsan
 
 RUN apt-get update
 RUN apt-get install -y cmake llvm-14 clang-14 libclang-14-dev libc++-14-dev libc++abi-14-dev libunwind-14-dev \
-    python3-minimal python-is-python3 zlib1g-dev git joe libprotobuf-dev libz3-dev libgoogle-perftools-dev libboost-container-dev python3-dev
+    python3-minimal python-is-python3 zlib1g-dev git joe libprotobuf-dev libz3-dev libgoogle-perftools-dev libboost-container-dev python3-dev libspdlog-dev
 RUN git clone --depth=1 --branch=v4.31c https://github.com/AFLplusplus/AFLplusplus /work/aflpp && \
     cd /work/aflpp && make PERFORMANCE=1 LLVM_CONFIG=llvm-config-14 NO_NYX=1 source-only -j4 && make install && \
     cd /work && git clone https://github.com/msgpack/msgpack-c.git && \
     cd msgpack-c && \
     git checkout cpp-7.0.0 && \
     CC=clang-14 CXX=clang++-14 cmake . && \
-    cmake --build . --target install
+    cmake --build . --target install && \
+    cd /work && \
+    git clone --recurse-submodules -b v1.76.0 --depth 1 --shallow-submodules https://github.com/grpc/grpc && \
+    mkdir -p cmake/build && \
+    cd cmake/build && \
+    CC=clang-14 CXX=clang++-14 cmake -DgRPC_INSTALL=ON \
+      -DgRPC_BUILD_TESTS=OFF \
+      -DCMAKE_CXX_STANDARD=17 \
+      ../.. && \
+    make -j 8 && \
+    make install
 
 RUN apt clean
 

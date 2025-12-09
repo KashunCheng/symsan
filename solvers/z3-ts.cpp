@@ -9,7 +9,7 @@
 
 using namespace symsan;
 
-#define FILTER_WRONG_AST 1
+#define FILTER_WRONG_AST 0
 
 static const std::unordered_map<unsigned, const char*> OP_MAP {
   {__dfsan::Extract, "Extract"},
@@ -827,6 +827,12 @@ Z3ParserSolver::solve_task(uint64_t task_id, unsigned timeout, solution_t &solut
     // solve the first constraint (optimistic)
     z3::expr e = task->at(0);
     solver.add(e);
+    // dump constraint system for debugging
+    // {
+    //   std::string smt = solver.to_smt2();
+    //   fprintf(stderr, "[Z3] task %lu base constraints:\n%s\n",
+    //           task_id, smt.c_str());
+    // }
     z3::check_result res = solver.check();
     if (res == z3::sat) {
       ret = opt_sat;
@@ -839,6 +845,11 @@ Z3ParserSolver::solve_task(uint64_t task_id, unsigned timeout, solution_t &solut
         for (size_t i = 1; i < task->size(); i++) {
           solver.add(task->at(i));
         }
+        // {
+        //   std::string smt = solver.to_smt2();
+        //   fprintf(stderr, "[Z3] task %lu nested constraints:\n%s\n",
+        //           task_id, smt.c_str());
+        // }
         res = solver.check();
         if (res == z3::sat) {
           ret = nested_sat;

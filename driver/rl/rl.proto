@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package rl;
+
+message TraceRequest {
+  uint64 line_to_reach = 1;
+  map<uint64, bool> branch_traces = 2;
+  bool reachable = 3;
+}
+
+message TraceResponse {
+  bool reached = 1;
+  oneof status {
+    bool sat = 2;
+    bool timeout = 3;
+  }
+  map<uint64, bool> symbolic_branch_trace = 4;
+  map<uint64, bool> non_symbolic_branch_trace = 5;
+}
+
+message ReadLinesRequest {}
+
+message LineInfo {
+  string file = 1;
+  uint32 line = 2;
+  bool is_if = 3;
+}
+
+message ReadLinesResponse {
+  map<uint64, LineInfo> lines = 1;
+}
+
+service RLDriver {
+  rpc Trace(TraceRequest) returns (TraceResponse);
+  rpc ReadLines(ReadLinesRequest) returns (ReadLinesResponse);
+}

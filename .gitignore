@@ -20,3 +20,7 @@ auto/
 !/libcxx/build_taint/lib/
 /install
 **/build/
+.venv/
+out/
+*.linecov.msgpack
+*.out

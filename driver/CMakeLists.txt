@@ -18,6 +18,9 @@ target_link_libraries(FGTest PRIVATE
 )
 install (TARGETS FGTest DESTINATION ${SYMSAN_BIN_DIR})
 
+## rl driver
+add_subdirectory(rl)
+
 if (DEFINED AFLPP_PATH)
     add_subdirectory(aflpp)
 endif()
