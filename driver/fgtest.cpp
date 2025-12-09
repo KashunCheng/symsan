@@ -58,6 +58,7 @@ symsan::Z3ParserSolver *__z3_parser = nullptr;
 struct LineCovEntry {
   std::string file;
   uint32_t line;
+  bool is_if;
 };
 
 static std::unordered_map<uint64_t, LineCovEntry> __linecov_entries;
@@ -106,8 +107,9 @@ static bool load_linecov_file(const std::string &path) {
       return false;
     auto *pairs = obj.via.map.ptr;
     for (uint32_t i = 0; i < obj.via.map.size; ++i) {
-      uint64_t line_id = 0;
-      pairs[i].key.convert(line_id);
+      std::string key_str;
+      pairs[i].key.convert(key_str);
+      uint64_t line_id = std::stoull(key_str);
       msgpack::object &val = pairs[i].val;
       if (val.type != msgpack::type::ARRAY || val.via.array.size < 2)
         continue;
@@ -115,7 +117,9 @@ static bool load_linecov_file(const std::string &path) {
       val.via.array.ptr[0].convert(file);
       uint32_t line = 0;
       val.via.array.ptr[1].convert(line);
-      __linecov_entries[line_id] = {std::move(file), line};
+      bool is_if = false;
+      val.via.array.ptr[2].convert(is_if);
+      __linecov_entries[line_id] = {std::move(file), line, is_if};
     }
     AOUT("loaded %u line coverage entries from %s\n",
          obj.via.map.size, path.c_str());

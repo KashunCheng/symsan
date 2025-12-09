@@ -3135,6 +3135,7 @@ struct LineEntry {
   uint64_t Id;
   std::string File;
   unsigned Line;
+  bool IsIf;
 };
 
 class LineCoveragePass : public PassInfoMixin<LineCoveragePass> {
@@ -3171,7 +3172,7 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
   LLVMContext &Ctx = M.getContext();
   IntegerType *Int64Ty = Type::getInt64Ty(Ctx);
   IntegerType *Int1Ty = Type::getInt1Ty(Ctx);
-  DenseSet<uint64_t> KnownLines;
+  DenseMap<uint64_t, size_t> LineEntryIndex;
   std::vector<LineEntry> Entries;
   DenseSet<uint64_t> CondLines;
 
@@ -3183,9 +3184,19 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
     raw_svector_ostream OS(Info);
     OS << ":" << Loc->getLine();
     uint64_t LineId = djbHash(OS.str());
-    if (KnownLines.insert(LineId).second)
-      Entries.push_back({LineId, std::move(Path), Loc->getLine()});
+    if (!LineEntryIndex.count(LineId)) {
+      size_t Index = Entries.size();
+      Entries.push_back({LineId, std::move(Path), Loc->getLine(),
+                         /*IsIf=*/false});
+      LineEntryIndex[LineId] = Index;
+    }
     return LineId;
+  };
+
+  auto MarkLineAsIf = [&](uint64_t LineId) {
+    auto It = LineEntryIndex.find(LineId);
+    if (It != LineEntryIndex.end())
+      Entries[It->second].IsIf = true;
   };
 
   for (Function &F : M) {
@@ -3207,8 +3218,10 @@ PreservedAnalyses LineCoveragePass::run(Module &M,
         if (!Target)
           continue;
         if (Target->getName() == "__taint_trace_cond") {
-          if (getBranchConditionInst(*CB))
+          if (getBranchConditionInst(*CB)) {
             CondLines.insert(*LineId);
+            MarkLineAsIf(*LineId);
+          }
         }
       }
     }
@@ -3342,10 +3355,15 @@ bool LineCoveragePass::writeMappingFile(
   msgpack::packer<msgpack::sbuffer> Packer(&Buffer);
   Packer.pack_map(Entries.size());
   for (const LineEntry &Entry : Entries) {
-    Packer.pack_uint64(Entry.Id);
-    Packer.pack_array(2);
+    Packer.pack(std::to_string(Entry.Id));
+    Packer.pack_array(3);
     Packer.pack(Entry.File);
     Packer.pack_uint32(Entry.Line);
+    if (Entry.IsIf) {
+      Packer.pack_true();
+    } else {
+      Packer.pack_false();
+    }
   }
 
   std::error_code EC;
