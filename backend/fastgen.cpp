@@ -96,6 +96,7 @@ BranchCoverageMap &getBranchCoverageTable() {
   return Table;
 }
 
+// Return true if it is a new line coverage
 bool markLineCovered(uint64_t line_id) {
   auto Result = getLineCoverageTable().findOrConstruct(
       line_id, [] { return static_cast<char>(0); });
@@ -104,13 +105,16 @@ bool markLineCovered(uint64_t line_id) {
   return Prev == 0;
 }
 
-void recordBranchCoverage(uint64_t cid, bool taken, bool symbolic) {
+// Return true if it is a new branch coverage
+bool recordBranchCoverage(uint64_t cid, bool taken, bool symbolic, char& flags) {
   auto Result = getBranchCoverageTable().findOrConstruct(
       cid, [] { return static_cast<char>(0); });
   char Mask = taken ? static_cast<char>(0x1) : static_cast<char>(0x2);
   if (symbolic)
     Mask |= static_cast<char>(0x4);
-  Result.first->second.data.fetch_or(Mask, std::memory_order_relaxed);
+  auto oldResult = Result.first->second.data.fetch_or(Mask, std::memory_order_relaxed);
+  flags = oldResult | Mask;
+  return flags != oldResult;
 }
 
 } // namespace
@@ -184,18 +188,21 @@ static inline void __send_ubi(dfsan_label label, uint64_t result,
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
 __line_coverage(uint64_t line_id, bool result, bool branch_condition_is_symbolic, uint64_t cid) {
-  if (cid != 0)
-    recordBranchCoverage(cid, result, branch_condition_is_symbolic);
-
-  if (!markLineCovered(line_id))
+  if (__pipe_fd < 0)
     return;
 
-  if (__pipe_fd < 0)
+  char msg_flags = 0;
+  bool send_msg = flags().always_report_coverage;
+  if (cid != 0)
+    send_msg |= recordBranchCoverage(cid, result, branch_condition_is_symbolic, msg_flags);
+  send_msg |= markLineCovered(line_id);
+
+  if (!send_msg)
     return;
 
   pipe_msg msg = {};
   msg.msg_type = cover_type;
-  msg.flags = branch_condition_is_symbolic ? F_COVER_SYMBOLIC : 0;
+  msg.flags = msg_flags;
   msg.id = cid;
   msg.context = static_cast<uint32_t>(line_id >> 32);
   msg.label = static_cast<uint32_t>(line_id & 0xffffffffu);

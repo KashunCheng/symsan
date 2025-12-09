@@ -443,7 +443,7 @@ int main(int argc, char* const argv[]) {
       case cover_type: {
         uint64_t line_id =
             (static_cast<uint64_t>(msg.context) << 32) | msg.label;
-        bool is_symbolic = (msg.flags & F_COVER_SYMBOLIC) != 0;
+        bool is_symbolic = (msg.flags & F_BRANCH_SYMBOLIC) != 0;
         const LineCovEntry *entry = lookup_linecov_entry(line_id);
         if (entry) {
           AOUT("line coverage: %s:%u cid=%llu result=%llu symbolic=%d, "

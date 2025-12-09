@@ -45,6 +45,9 @@ int symsan_set_trace_file_size(int enable);
 /// @brief set the force stdin mode for the target binary
 int symsan_set_force_stdin(int enable);
 
+/// @brief set the coverage report mode to always
+int symsan_set_always_report_coverage(int enable);
+
 /// @brief run the target binary with the input file descriptor
 /// @param fd: input file descriptor, only used if input is "stdin"
 /// @return < 0 on syscall error, > 0 on setup error, 0 on success

@@ -260,7 +260,9 @@ enum undefined_check_ids {
 #define F_ADD_CONS   0x1
 #define F_LOOP_EXIT  0x2
 #define F_LOOP_LATCH 0x4
-#define F_COVER_SYMBOLIC 0x8 // the branch condition is symbolic, so it is solvable
+#define F_BRANCH_TAKEN_HISTORY     0x1 // the branch has taken at least once
+#define F_BRANCH_NOT_TAKEN_HISTORY 0x2 // the branch has not taken at least once
+#define F_BRANCH_SYMBOLIC          0x4 // the branch condition is symbolic, so it is solvable
 
 #define F_MEMERR_UAF  0x1
 #define F_MEMERR_OLB  0x2
