@@ -29,6 +29,7 @@ public:
                 std::vector<uint64_t> &tasks) override;
 
   int add_constraints(dfsan_label label, uint64_t result) override;
+  int add_constraints_as_task(dfsan_label label, uint64_t result, uint64_t& task_id);
 
 protected:
   z3::context &context_;

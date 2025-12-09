@@ -760,6 +760,46 @@ int Z3AstParser::add_constraints(dfsan_label label, uint64_t result) {
   return 0;
 }
 
+int Z3AstParser::add_constraints_as_task(dfsan_label label, uint64_t result, uint64_t& task_id) {
+  if (label < CONST_OFFSET || label == __dfsan::kInitializingLabel || label >= size_) {
+    // invalid label
+    return -1;
+  }
+  auto task = retrieve_task(task_id);
+  if (task == nullptr) {
+    task = std::make_shared<z3_task_t>();
+  }
+
+  try {
+    input_dep_set_t inputs;
+    z3::expr expr = serialize(label, inputs);
+    collect_more_deps(inputs);
+    // prepare result
+    uint8_t size = get_label_info(label)->size;
+    z3::expr r = context_.bv_val(result, size);
+    // add constraint
+    if (expr.is_bool()) r = context_.bool_val(result);
+
+#if FILTER_WRONG_AST
+    // double check if label is valid
+    if (value_cache_[label] != result) {
+      // recalculated value must match the recorded value
+      fprintf(stderr, "WARNING: value mismatch for label %u: expected %ld, got %ld\n",
+              label, value_cache_[label], result);
+      return -1;
+    }
+#endif
+
+    save_constraint(expr == r, inputs);
+    task->push_back((expr == r));
+    task_id = save_task(task);
+  } catch (z3::exception e) {
+    return -1;
+  }
+
+  return 0;
+}
+
 void Z3AstParser::save_constraint(z3::expr expr, input_dep_set_t &inputs) {
   for (auto off : inputs) {
     auto c = get_branch_dep(off);

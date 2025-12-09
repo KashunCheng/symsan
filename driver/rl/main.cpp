@@ -493,7 +493,7 @@ bool RLDriver::run_once(const std::string &input_path, bool report_all,
         st == symsan::Z3ParserSolver::opt_sat_nested_timeout ||
         st == symsan::Z3ParserSolver::opt_sat_nested_unsat) {
       if (!solutions.empty()) {
-        std::vector<uint8_t> new_buf = res.input_bytes;
+        std::vector<uint8_t> new_buf = res.input_bytes; //TODO: Do you think we need to resize new_buf to max(all(offset), input_bytes) first? So we don't need to check offset in the inner loop?
         for (auto const &sol : solutions) {
           if (sol.offset < new_buf.size()) {
             new_buf[sol.offset] = sol.val;
@@ -605,8 +605,12 @@ bool RLDriver::build_branch_maps(
 
 bool RLDriver::solve_for_trace(
     const std::unordered_map<uint64_t, bool> &branch_trace, RunResult &base_run) {
+  std::vector<symsan::input_t> inputs;
+  inputs.push_back({base_run.input_bytes.data(), base_run.input_bytes.size()});
+  parser_->restart(inputs);
   // capture cond metadata for symbolic branches once so we can reuse below
   std::unordered_map<uint64_t, CondEntry> symbolic_meta;
+  uint64_t task_id = std::numeric_limits<uint64_t>::max();
   for (auto const &kv : branch_trace) {
     auto bit = branches_.find(kv.first);
     if (bit == branches_.end()) {
@@ -626,54 +630,26 @@ bool RLDriver::solve_for_trace(
                    kv.first);
       return false;
     }
-    parser_->add_constraints(c_it->second.label, kv.second ? 1 : 0);
+    parser_->add_constraints_as_task(c_it->second.label, kv.second ? 1 : 0, task_id); //TODO: we do not use kv.second. kv.second means if we want to take it or not on the ast side. However, here we need the direction on the llvm ir side.
     symbolic_meta.emplace(kv.first, c_it->second);
     spdlog::debug("Added symbolic constraint for branch {} -> {}", kv.first,
                   kv.second);
   }
 
-  // collect symbolic branches whose current result differs so we can build tasks
-  std::vector<uint64_t> mismatched;
-  for (auto const &kv : branch_trace) {
-    auto it = base_run.branches.find(kv.first);
-    if (it == base_run.branches.end())
-      continue;
-    if (it->second.symbolic && it->second.last_result != kv.second) {
-      mismatched.push_back(kv.first);
-    }
-  }
-
   std::vector<uint8_t> buf = base_run.input_bytes;
   std::vector<uint64_t> solve_tasks;
-  for (auto line_id : mismatched) {
-    auto cid_it = line_to_cid_.find(line_id);
-    if (cid_it == line_to_cid_.end())
-      return false;
-    auto c_it = conds_.find(cid_it->second);
-    if (c_it == conds_.end())
-      return false;
-    auto meta_it = symbolic_meta.find(line_id);
-    if (meta_it == symbolic_meta.end()) {
-      symbolic_meta.emplace(line_id, c_it->second);
-      meta_it = symbolic_meta.find(line_id);
-    }
-    uint8_t curr_r = meta_it->second.result;
-    parser_->parse_cond(meta_it->second.label, curr_r, false, solve_tasks);
-  }
 
-  for (auto tid : solve_tasks) {
-    symsan::Z3ParserSolver::solution_t solutions;
-    auto st = parser_->solve_task(tid, cfg_.solve_timeout_ms, solutions);
-    if (st != symsan::Z3ParserSolver::opt_sat &&
-        st != symsan::Z3ParserSolver::nested_sat &&
-        st != symsan::Z3ParserSolver::opt_sat_nested_timeout &&
-        st != symsan::Z3ParserSolver::opt_sat_nested_unsat) {
-      return false;
-    }
-    for (auto const &sol : solutions) {
-      if (sol.offset < buf.size()) {
-        buf[sol.offset] = sol.val;
-      }
+  symsan::Z3ParserSolver::solution_t solutions;
+  auto st = parser_->solve_task(task_id, cfg_.solve_timeout_ms, solutions);
+  if (st != symsan::Z3ParserSolver::opt_sat &&
+      st != symsan::Z3ParserSolver::nested_sat &&
+      st != symsan::Z3ParserSolver::opt_sat_nested_timeout &&
+      st != symsan::Z3ParserSolver::opt_sat_nested_unsat) {
+    return false;
+  }
+  for (auto const &sol : solutions) {
+    if (sol.offset < buf.size()) {
+      buf[sol.offset] = sol.val;
     }
   }
 
@@ -735,7 +711,7 @@ Status RLDriver::HandleTrace(const rl::TraceRequest &req,
   bool sat = true;
   bool timeout = false;
 
-  bool have_run = run_has_branches(last_run, branch_trace);
+  bool have_run = run_has_branches(last_run, branch_trace); //TODO: this to do it for the person review, don't remove (is it necessary to keep run_has_branches)
   if (!have_run && !branch_trace.empty()) {
     have_run = ensure_run_has_branches(branch_trace, last_run);
   }
