@@ -1,0 +1,2 @@
+#!/bin/bash
+cd /workspaces/symsan && rm -rf build && mkdir -p build && cd build && CC=clang-14 CXX=clang++-14 cmake -DCMAKE_INSTALL_PREFIX=. -DAFLPP_PATH=/work/aflpp  -DCMAKE_BUILD_TYPE=Debug   ../  &&  make -j `nproc`  && make install

@@ -24,3 +24,8 @@ auto/
 out/
 *.linecov.msgpack
 *.out
+examples/id-*
+web-service/results/*
+web-service/uploads/*
+web-service/__pycache__/*
+example_rl/__pycache__/*
