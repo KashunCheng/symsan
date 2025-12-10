@@ -5,7 +5,7 @@ ENV TZ=Etc/UTC
 
 WORKDIR /work
 RUN apt-get update && apt-get install -y cmake llvm-14 clang-14 libclang-14-dev libc++-14-dev libc++abi-14-dev libunwind-14-dev \
-    python3-minimal python-is-python3 zlib1g-dev git joe libprotobuf-dev libz3-dev libgoogle-perftools-dev libboost-container-dev python3-dev libspdlog-dev \
+    python3-minimal python-is-python3 zlib1g-dev git joe libprotobuf-dev libz3-dev libgoogle-perftools-dev libboost-container-dev python3-dev libspdlog-dev libfmt9 \
     && apt clean && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth=1 --branch=v4.31c https://github.com/AFLplusplus/AFLplusplus /work/aflpp && \
     cd /work/aflpp && make PERFORMANCE=1 LLVM_CONFIG=llvm-config-14 NO_NYX=1 source-only -j `nproc` && make install
@@ -28,17 +28,6 @@ RUN cd /work && git clone https://github.com/msgpack/msgpack-c.git && \
 # Install base dependencies and development tools
 # RUN apt-get update && apt-get install -y \
     # && apt clean && rm -rf /var/lib/apt/lists/*
-
-
-# RUN git clone --depth=1 --branch=v4.31c https://github.com/AFLplusplus/AFLplusplus /work/aflpp && \
-#     cd /work/aflpp && \
-#     make PERFORMANCE=1 LLVM_CONFIG=llvm-config-14 NO_NYX=1 source-only -j `nproc` && \
-#     make install && \
-#     cd /work && rm -rf /work/aflpp/.git
-# COPY . /work/symsan
-# RUN cd /work/symsan/ && mkdir -p build && \
-#     cd build && CC=clang-14 CXX=clang++-14 cmake -DCMAKE_INSTALL_PREFIX=. -DAFLPP_PATH=/work/aflpp ../  && \
-#     make -j `nproc` && make install
 
 ENV KO_CC=clang-14
 ENV KO_CXX=clang++-14

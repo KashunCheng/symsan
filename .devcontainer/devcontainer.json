@@ -6,7 +6,9 @@
 	},
 
 	// No Docker support in this devcontainer
-	"features": {},
+	"features": {
+		"ghcr.io/devcontainers/features/node:1": {}
+	},
 	
 	// Workspace folder after container creation
 	"workspaceFolder": "/workspaces/symsan",
