@@ -691,6 +691,15 @@ Status RLDriver::HandleTrace(const rl::TraceRequest &req,
   spdlog::info("Trace request line_to_reach={} branches={}", req.line_to_reach(),
                req.branch_traces_size());
 
+  // Reset state for each new trace request to ensure fresh symbolic execution
+  input_queue_.clear();
+  input_queue_.push_back(cfg_.input_path);
+  branches_.clear();
+  conds_.clear();
+  line_to_cid_.clear();
+  branch_inputs_.clear();
+  last_input_path_.clear();
+
   std::unordered_map<uint64_t, bool> branch_trace;
   for (auto const &kv : req.branch_traces()) {
     auto lt = line_table_.find(kv.first);
@@ -818,7 +827,9 @@ void RLDriver::Serve() {
 } // namespace
 
 static void usage(const char *prog) {
-  fprintf(stderr, "Usage: %s --config <file>\n", prog);
+  fprintf(stderr, "Usage: %s --config <file> [--listen <addr>]\n", prog);
+  fprintf(stderr, "  --config <file>   Configuration file path\n");
+  fprintf(stderr, "  --listen <addr>   Listen address (default: 0.0.0.0:50051)\n");
 }
 
 static bool parse_config_file(const std::string &path, Config &cfg) {
@@ -869,15 +880,41 @@ static bool parse_config_file(const std::string &path, Config &cfg) {
 }
 
 int main(int argc, char *argv[]) {
-  if (argc != 3 || strcmp(argv[1], "--config") != 0) {
+  std::string config_path;
+  std::string listen_addr;
+
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+      config_path = argv[++i];
+    } else if (strcmp(argv[i], "--listen") == 0 && i + 1 < argc) {
+      listen_addr = argv[++i];
+    } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+      usage(argv[0]);
+      return 0;
+    } else {
+      fprintf(stderr, "Unknown option: %s\n", argv[i]);
+      usage(argv[0]);
+      return 1;
+    }
+  }
+
+  if (config_path.empty()) {
+    fprintf(stderr, "Error: --config is required\n");
     usage(argv[0]);
     return 1;
   }
+
   Config cfg;
-  if (!parse_config_file(argv[2], cfg)) {
-    fprintf(stderr, "Failed to read config %s\n", argv[2]);
+  if (!parse_config_file(config_path, cfg)) {
+    fprintf(stderr, "Failed to read config %s\n", config_path.c_str());
     return 1;
   }
+
+  // Command line overrides config file
+  if (!listen_addr.empty()) {
+    cfg.listen_addr = listen_addr;
+  }
+
   spdlog::cfg::load_env_levels();
   RLDriver driver(cfg);
   driver.Serve();
