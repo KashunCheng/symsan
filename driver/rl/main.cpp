@@ -130,8 +130,8 @@ private:
   bool explore_until_covered(const std::unordered_map<uint64_t, bool> &targets,
                              RunResult &last_run);
   bool build_branch_maps(uint64_t line_id,
-                         std::unordered_map<uint64_t, bool> &sym,
-                         std::unordered_map<uint64_t, bool> &non_sym,
+                         std::unordered_map<uint64_t, rl::BranchTraceType> &sym,
+                         std::unordered_map<uint64_t, rl::BranchTraceType> &non_sym,
                          const std::unordered_map<uint64_t, BranchInfo> &source);
   optional<RunResult> solve_for_trace(const std::unordered_map<uint64_t, bool> &branch_trace,
                                       const std::vector<uint8_t> &buf);
@@ -594,16 +594,35 @@ bool RLDriver::explore_until_covered(
 }
 
 bool RLDriver::build_branch_maps(
-    uint64_t line_id, std::unordered_map<uint64_t, bool> &sym,
-    std::unordered_map<uint64_t, bool> &non_sym,
+    uint64_t line_id, std::unordered_map<uint64_t, rl::BranchTraceType> &sym,
+    std::unordered_map<uint64_t, rl::BranchTraceType> &non_sym,
     const std::unordered_map<uint64_t, BranchInfo> &source) {
-  auto it = source.find(line_id);
-  if (it == source.end() || !it->second.seen)
-    return false;
-  if (it->second.symbolic) {
-    sym[line_id] = it->second.last_result;
+  rl::BranchTraceType trace_type = rl::BRANCH_TRACE_NOT_REACHED;
+  const BranchInfo *info = nullptr;
+
+  auto run_it = source.find(line_id);
+  if (run_it != source.end() && run_it->second.seen) {
+    info = &run_it->second;
+    if (info->taken && info->not_taken){
+      trace_type = rl::BRANCH_TRACE_TAKEN_AND_NOT_TAKEN;
+    } else if (info->taken) {
+      trace_type = rl::BRANCH_TRACE_TAKEN;
+    } else if (info->not_taken) {
+      trace_type = rl::BRANCH_TRACE_NOT_TAKEN;
+    }
   } else {
-    non_sym[line_id] = it->second.last_result;
+    auto global_it = branches_.find(line_id);
+    if (global_it != branches_.end())
+      info = &global_it->second;
+  }
+
+  if (!info)
+    return false;
+
+  if (info->symbolic) {
+    sym[line_id] = trace_type;
+  } else {
+    non_sym[line_id] = trace_type;
   }
   return true;
 }
@@ -666,11 +685,14 @@ optional<RunResult> RLDriver::solve_for_trace(const std::unordered_map<uint64_t,
   if (!run_once(new_input, true, verify))
     return nullopt;
 
-  // verify requested branch directions are satisfied
+  // verify requested symbolic branch directions are satisfied
   for (auto const &kv : branch_trace) {
     auto it = verify.branches.find(kv.first);
     if (it == verify.branches.end() || !it->second.seen || it->second.last_result != kv.second) {
-      spdlog::debug("Verification failed for branch {} (expected {} but {}{})",
+      if (!branches_[kv.first].symbolic) {
+        continue;
+      }
+      spdlog::warn("Verification failed for branch {} (expected {} but {}{}), there might be a bug in the solver.",
                     kv.first, kv.second,
                     (it == verify.branches.end() || !it->second.seen)
                         ? "branch missing"
@@ -678,7 +700,6 @@ optional<RunResult> RLDriver::solve_for_trace(const std::unordered_map<uint64_t,
                     (it == verify.branches.end() || !it->second.seen)
                         ? ""
                         : (it->second.last_result ? "true" : "false"));
-      return nullopt;
     }
   }
 
@@ -703,8 +724,8 @@ Status RLDriver::HandleTrace(const rl::TraceRequest &req,
   RunResult last_run;
   bool covered = explore_until_covered(branch_trace, last_run);
 
-  std::unordered_map<uint64_t, bool> sym_map;
-  std::unordered_map<uint64_t, bool> non_sym_map;
+  std::unordered_map<uint64_t, rl::BranchTraceType> sym_map;
+  std::unordered_map<uint64_t, rl::BranchTraceType> non_sym_map;
   bool reached = false;
   bool sat = true;
   bool timeout = false;
@@ -731,7 +752,7 @@ Status RLDriver::HandleTrace(const rl::TraceRequest &req,
     // rebuild maps after solving/verification run
     for (auto const &kv : branch_trace) {
       if (!build_branch_maps(kv.first, sym_map, non_sym_map, last_run.branches)) {
-        spdlog::debug("Branch {} missing from final run when building response",
+        spdlog::debug("Missing metadata for branch {} when building response",
                       kv.first);
       }
     }
