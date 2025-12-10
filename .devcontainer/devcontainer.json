@@ -5,14 +5,8 @@
 		"context": "."
 	},
 
-	// Enable Docker-outside-of-Docker with official Docker CLI
-	"features": {
-		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
-			"moby": false,
-			"installDockerBuildx": true,
-			"dockerDashComposeVersion": "v2"
-		}
-	},
+	// No Docker support in this devcontainer
+	"features": {},
 	
 	// Workspace folder after container creation
 	"workspaceFolder": "/workspaces/symsan",
@@ -37,8 +31,7 @@
 				"llvm-vs-code-extensions.vscode-clangd",
 				"twxs.cmake",
 				"github.copilot",
-				"eamodio.gitlens",
-				"ms-azuretools.vscode-docker"
+				"eamodio.gitlens"
 			],
 			"settings": {
 				"C_Cpp.default.compilerPath": "/usr/bin/clang-14",
@@ -54,16 +47,14 @@
 	},
 	
 	// Command to run after container creation
-	"postCreateCommand": "cd /workspaces/symsan && mkdir -p build && cd build && CC=clang-14 CXX=clang++-14 cmake -DCMAKE_INSTALL_PREFIX=. -DAFLPP_PATH=/work/aflpp ../  &&  make -j `nproc`  && make install && echo 'Dev container ready!'",
+	"postCreateCommand": "cd /workspaces/symsan && mkdir -p build && cd build && CC=clang-14 CXX=clang++-14 cmake -DCMAKE_INSTALL_PREFIX=. -DAFLPP_PATH=/work/aflpp  -DCMAKE_BUILD_TYPE=Debug   ../  &&  make -j `nproc`  && make install && echo 'Dev container ready!'",
 	
 	// Forward ports (add as needed)
 	"forwardPorts": [],
 	
 	// Use vscode user
 	"remoteUser": "vscode",
-	
-
-	
+		
 	// Container privilege settings (for debugger and other tools)
 	"runArgs": [
 		"--cap-add=SYS_PTRACE",
