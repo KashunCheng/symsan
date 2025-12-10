@@ -29,8 +29,8 @@ int main(int argc, char *argv[]) {
         
     if (mode == 1) {
         printf("Mode 1: Temperature-based control\n");
-        if (temp > 30 && sensorOk) {
-            open = true;
+        if (temp > 12 && sensorOk) {
+            open = true; printf("Temperature within range, open set true.\n");
         } else {
             open = false;
         }

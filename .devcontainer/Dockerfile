@@ -24,7 +24,7 @@ RUN (groupadd --gid $USER_GID $USERNAME 2>/dev/null || true) \
     && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 
-RUN apt update &&apt install python3-pip python3-grpcio python3-grpc-tools  -y && \
+RUN apt update &&apt install python3-pip python3-grpcio python3-grpc-tools python3-unicorn  python3-fastapi   -y && \
      apt clean && rm -rf /var/lib/apt/lists/*
 # Switch to vscode user
 USER $USERNAME
