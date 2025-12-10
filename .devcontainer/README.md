@@ -8,6 +8,7 @@ This Dev Container configuration is based on the project's Dockerfile and provid
 - LLVM/Clang 14
 - Pre-installed AFLplusplus v4.31c
 - All necessary development dependencies included
+- python packages included
 - Configured with C/C++ development tool extensions
 
 ## Usage
@@ -19,15 +20,7 @@ This Dev Container configuration is based on the project's Dockerfile and provid
 
 ## Building the Project
 
-After the container starts, run in the terminal:
-
-```bash
-mkdir -p build
-cd build
-CC=clang-14 CXX=clang++-14 cmake -DCMAKE_INSTALL_PREFIX=. -DAFLPP_PATH=/work/aflpp -DCMAKE_BUILD_TYPE=Debug ../
-make -j4
-make install
-```
+just open it.
 
 ## Environment Variables
 

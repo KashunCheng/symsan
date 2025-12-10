@@ -11,11 +11,6 @@
 			"moby": false,
 			"installDockerBuildx": true,
 			"dockerDashComposeVersion": "v2"
-		},
-		"ghcr.io/devcontainers/features/docker-in-docker:2": {
-			"installDockerBuildx": true,
-			"installDockerComposeSwitch": true,
-			"dockerDashComposeVersion": "v2"
 		}
 	},
 	
@@ -59,7 +54,7 @@
 	},
 	
 	// Command to run after container creation
-	"postCreateCommand": "echo 'Dev container ready!'",
+	"postCreateCommand": "cd /workspaces/symsan && mkdir -p build && cd build && CC=clang-14 CXX=clang++-14 cmake -DCMAKE_INSTALL_PREFIX=. -DAFLPP_PATH=/work/aflpp ../  &&  make -j `nproc`  && make install && echo 'Dev container ready!'",
 	
 	// Forward ports (add as needed)
 	"forwardPorts": [],
