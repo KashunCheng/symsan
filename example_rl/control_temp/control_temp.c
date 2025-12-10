@@ -7,16 +7,20 @@
 
 int main(int argc, char *argv[]) {
     // Read input from stdin: "mode temp userLevel emergency"
-    const size_t want = 4;
-    unsigned char buf[4];
+    const size_t want = 16;
+    unsigned char buf[16];
     size_t n = fread(buf, 1, want, stdin);
     if (n != want) {
         return -1;
     }
-    int mode = buf[0] - '0';
-    int temp = buf[1] - '0';
-    int userLevel = buf[2] - '0';
-    bool emergency = (buf[3] - '0' != 0);
+    int mode = 0;
+    int temp = 0;
+    int userLevel = 0;
+    int emergency = 0;
+    memcpy(&mode, buf, 4);
+    memcpy(&temp, buf + 4, 4);
+    memcpy(&userLevel, buf + 8, 4);
+    memcpy(&emergency, buf + 12, 4);
     // Control function logic inlined
     bool open = false;
     bool locked = false;
@@ -29,8 +33,8 @@ int main(int argc, char *argv[]) {
         
     if (mode == 1) {
         printf("Mode 1: Temperature-based control\n");
-        if (temp > 12 && sensorOk) {
-            open = true; printf("Temperature within range, open set true.\n");
+        if (temp > 30 && sensorOk) {
+            open = true;
         } else {
             open = false;
         }

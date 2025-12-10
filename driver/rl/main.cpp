@@ -123,10 +123,6 @@ private:
   bool mmap_input(const std::string &path, std::vector<uint8_t> &buf, int &fd);
   std::string materialize_input(const std::vector<uint8_t> &buf);
   bool branches_covered(const std::unordered_map<uint64_t, bool> &targets);
-  bool run_has_branches(const RunResult &run,
-                        const std::unordered_map<uint64_t, bool> &targets) const;
-  bool ensure_run_has_branches(const std::unordered_map<uint64_t, bool> &targets,
-                               RunResult &run);
   bool explore_until_covered(const std::unordered_map<uint64_t, bool> &targets,
                              RunResult &last_run);
   bool build_branch_maps(uint64_t line_id,
@@ -144,7 +140,6 @@ private:
   std::unordered_map<uint64_t, BranchInfo> branches_;
   std::unordered_map<uint64_t, uint64_t> line_to_cid_;
   std::unordered_map<uint64_t, CondEntry> conds_; // cid -> label/result
-  std::unordered_map<uint64_t, std::string> branch_inputs_;
   std::deque<std::string> input_queue_;
   std::string last_input_path_;
   uint32_t session_id_ = 0;
@@ -448,27 +443,35 @@ bool RLDriver::run_once(const std::string &input_path, bool report_all,
       // branch bookkeeping (only if it is a branch)
       if (is_if || msg.id != 0) {
         BranchInfo &bi = branches_[line_id];
+        BranchInfo &rbi = res.branches[line_id];
+
         bi.line_id = line_id;
+        rbi.line_id = line_id;
         bi.cid = msg.id;
+        rbi.cid = msg.id;
         bi.is_if = is_if;
+        rbi.is_if = is_if;
         bi.seen = true;
+        rbi.seen = true;
         bi.last_result = msg.result;
-        if (msg.result)
+        rbi.last_result = msg.result;
+        if (msg.flags & F_BRANCH_TAKEN_HISTORY){
           bi.taken = true;
-        else
+          rbi.taken = true;
+        }
+        if (msg.flags & F_BRANCH_NOT_TAKEN_HISTORY){
           bi.not_taken = true;
-        if (msg.flags & F_BRANCH_TAKEN_HISTORY)
-          bi.taken = true;
-        if (msg.flags & F_BRANCH_NOT_TAKEN_HISTORY)
-          bi.not_taken = true;
-        if (msg.flags & F_BRANCH_SYMBOLIC)
+          rbi.not_taken = true;
+        }
+        if (msg.flags & F_BRANCH_SYMBOLIC){
           bi.symbolic = true;
+          rbi.symbolic = true;
+        }
         line_to_cid_[line_id] = msg.id;
 
-        // per-run record
-        BranchInfo &rbi = res.branches[line_id];
-        rbi = bi;
-        branch_inputs_[line_id] = res.input_path;
+        if (report_all){
+          spdlog::debug("Branch line_id={} cid={} symbolic={} last_result={} taken={} not_taken={}", line_id, msg.id, msg.flags & F_BRANCH_SYMBOLIC, msg.result, msg.flags & F_BRANCH_TAKEN_HISTORY, msg.flags & F_BRANCH_NOT_TAKEN_HISTORY);
+        }
       }
 
       // runtime only reports new coverage unless we explicitly ask for all hits
@@ -522,57 +525,6 @@ bool RLDriver::branches_covered(const std::unordered_map<uint64_t, bool> &target
       return false;
   }
   return true;
-}
-
-bool RLDriver::run_has_branches(
-    const RunResult &run, const std::unordered_map<uint64_t, bool> &targets) const {
-  if (targets.empty())
-    return true;
-  for (auto const &kv : targets) {
-    auto it = run.branches.find(kv.first);
-    if (it == run.branches.end() || !it->second.seen)
-      return false;
-  }
-  return true;
-}
-
-bool RLDriver::ensure_run_has_branches(
-    const std::unordered_map<uint64_t, bool> &targets, RunResult &run) {
-  if (run_has_branches(run, targets))
-    return true;
-  std::vector<std::string> candidates;
-  for (auto const &kv : targets) {
-    auto bi = branch_inputs_.find(kv.first);
-    if (bi != branch_inputs_.end() && !bi->second.empty())
-      candidates.push_back(bi->second);
-  }
-  if (!last_input_path_.empty())
-    candidates.push_back(last_input_path_);
-  if (!cfg_.input_path.empty())
-    candidates.push_back(cfg_.input_path);
-
-  std::vector<std::string> unique;
-  std::unordered_set<std::string> seen;
-  for (auto const &path : candidates) {
-    if (path.empty())
-      continue;
-    if (seen.insert(path).second)
-      unique.push_back(path);
-  }
-
-  for (auto const &path : unique) {
-    RunResult candidate;
-    spdlog::debug("Replaying input {} to refresh branch coverage", path);
-    if (!run_once(path, true, candidate)) {
-      spdlog::warn("Failed to replay {}", path);
-      continue;
-    }
-    if (run_has_branches(candidate, targets)) {
-      run = std::move(candidate);
-      return true;
-    }
-  }
-  return false;
 }
 
 bool RLDriver::explore_until_covered(
