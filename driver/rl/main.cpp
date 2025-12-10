@@ -677,7 +677,7 @@ optional<RunResult> RLDriver::solve_for_trace(const std::unordered_map<uint64_t,
                     (it == verify.branches.end() || !it->second.seen)
                         ? ""
                         : (it->second.last_result ? "true" : "false"));
-      return nullopt;
+      //return nullopt;
     }
   }
 
@@ -692,13 +692,13 @@ Status RLDriver::HandleTrace(const rl::TraceRequest &req,
                req.branch_traces_size());
 
   // Reset state for each new trace request to ensure fresh symbolic execution
-  input_queue_.clear();
-  input_queue_.push_back(cfg_.input_path);
-  branches_.clear();
-  conds_.clear();
-  line_to_cid_.clear();
-  branch_inputs_.clear();
-  last_input_path_.clear();
+  // input_queue_.clear();
+  // input_queue_.push_back(cfg_.input_path);
+  // branches_.clear();
+  // conds_.clear();
+  // line_to_cid_.clear();
+  // branch_inputs_.clear();
+  // last_input_path_.clear();
 
   std::unordered_map<uint64_t, bool> branch_trace;
   for (auto const &kv : req.branch_traces()) {
