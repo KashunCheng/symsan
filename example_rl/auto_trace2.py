@@ -14,19 +14,19 @@ import grpc  # 已在 rl_client.py 里用到，这里也直接用
 import rl_client  # 就是你贴的那个文件，文件名为 rl_client.py
 
 
-# 你关心的源码行号（就是之前你手动执行 --line 50 / 54 / 61 / 72）
-TARGET_LINES: List[int] = [50, 54, 61, 72]
+# 明确指定 line_to_reach 对应的源码行号
+LINE_TO_REACH: int = 85
 
 # 分支方向配置：源码行号 -> 分支方向 (True/False)
 # 用源码行号来指定，代码会自动转换成对应的 line_id
 # 如果某个分支行号没有在这里指定，默认为 True
 BRANCH_DIRECTIONS_BY_LINE: Dict[int, bool] = {
-    50: True,   # 第50行的分支方向
-    54: True,   # 第54行的分支方向  
-    72: False
-    # 72 是 line_to_reach (is_if=False)，不需要设置方向
+    32: False,   # 第32行的分支方向
+   # 34: False,
+    38: False,
+    63: True,    # 第63行的分支方向  
+    65: False
 }
-
 # gRPC endpoint
 ENDPOINT = "127.0.0.1:50051"
 
@@ -70,13 +70,15 @@ def collect_nodes_for_lines(
 
 def build_trace_args(
     nodes: List[Tuple[int, object]],
+    line_to_reach_src: int,
     branch_directions: Dict[int, bool] = None
 ) -> Tuple[int, List[Tuple[int, bool]]]:
     """
     根据 nodes 构造：
-      - line_to_reach: is_if == False 的那个 line_id
-      - branches: [(line_id, direction), ...]  只包含 is_if == True 的节点
+      - line_to_reach: 明确指定的源码行号对应的 line_id
+      - branches: [(line_id, direction), ...]  其他节点作为分支
       
+    line_to_reach_src: 目标行的源码行号
     branch_directions: 可选的字典，指定每个 line_id 的分支方向（true/false）
                       如果未提供，默认使用 True
     """
@@ -87,25 +89,16 @@ def build_trace_args(
         branch_directions = {}
 
     for lid, info in nodes:
-        is_if = bool(info.is_if)
-        if is_if:
-            # 这是一个分支节点，需要设置方向
-            # 如果没有指定方向，默认为 True
+        if info.line == line_to_reach_src:
+            # 这是明确指定的目标行
+            line_to_reach = lid
+        else:
+            # 其他节点作为分支
             direction = branch_directions.get(lid, True)
             branches.append((lid, direction))
-        else:
-            # 这是目标行 line_to_reach
-            if line_to_reach is None:
-                line_to_reach = lid
-            else:
-                # 如果真的遇到多个 is_if == False，可以按需改成报错或保留第一个
-                print(
-                    f"[WARN] 已有 line_to_reach={line_to_reach}，"
-                    f"又遇到 is_if==False 的 {lid}，先保留第一个"
-                )
 
     if line_to_reach is None:
-        raise RuntimeError("没有任何 is_if == False 的节点，无法设置 line_to_reach")
+        raise RuntimeError(f"指定的 line_to_reach 源码行 {line_to_reach_src} 没有在 nodes 中找到")
 
     return line_to_reach, branches
 
@@ -153,8 +146,13 @@ def run_trace(stub, rl_pb2, line_to_reach: int, branches: List[Tuple[int, bool]]
 def main():
     stub, rl_pb2 = make_stub(ENDPOINT)
 
-    print(f"[INFO] target source lines = {TARGET_LINES}")
-    nodes = collect_nodes_for_lines(stub, rl_pb2, TARGET_LINES)
+    # 所有相关的行号：line_to_reach + 所有分支行
+    target_lines = [LINE_TO_REACH] + list(BRANCH_DIRECTIONS_BY_LINE.keys())
+    print(f"[INFO] line_to_reach (source line) = {LINE_TO_REACH}")
+    print(f"[INFO] branch lines = {list(BRANCH_DIRECTIONS_BY_LINE.keys())}")
+    print(f"[INFO] all target source lines = {target_lines}")
+    
+    nodes = collect_nodes_for_lines(stub, rl_pb2, target_lines)
 
     # 构建 line_id -> 源码行号 的映射
     id_to_line: Dict[int, int] = {lid: info.line for lid, info in nodes}
@@ -173,7 +171,7 @@ def main():
             branch_directions[line_to_id[src_line]] = direction
             print(f"[BRANCH] line {src_line} (id={line_to_id[src_line]}) -> {direction}")
 
-    line_to_reach, branches = build_trace_args(nodes, branch_directions)
+    line_to_reach, branches = build_trace_args(nodes, LINE_TO_REACH, branch_directions)
 
     print(f"[INFO] line_to_reach = {line_to_reach}")
     print(f"[INFO] branches = {branches}")
