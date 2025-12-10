@@ -1,0 +1,48 @@
+if(NOT DEFINED GIT_TEMPLATE)
+  message(FATAL_ERROR "GIT_TEMPLATE is not set")
+endif()
+if(NOT DEFINED GIT_OUTPUT)
+  message(FATAL_ERROR "GIT_OUTPUT is not set")
+endif()
+if(NOT DEFINED GIT_STATE_FILE)
+  message(FATAL_ERROR "GIT_STATE_FILE is not set")
+endif()
+if(NOT DEFINED SOURCE_DIR)
+  set(SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
+execute_process(
+  COMMAND git rev-parse --short HEAD
+  WORKING_DIRECTORY "${SOURCE_DIR}"
+  OUTPUT_VARIABLE CURRENT_GIT_HASH
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_VARIABLE GIT_HASH_ERROR
+  RESULT_VARIABLE GIT_HASH_RESULT
+)
+
+if(NOT GIT_HASH_RESULT EQUAL 0)
+  message(WARNING "Failed to determine git hash: ${GIT_HASH_ERROR}")
+  set(CURRENT_GIT_HASH "unknown")
+endif()
+
+set(SHOULD_WRITE FALSE)
+if(NOT EXISTS "${GIT_OUTPUT}" OR NOT EXISTS "${GIT_STATE_FILE}")
+  set(SHOULD_WRITE TRUE)
+endif()
+
+if(EXISTS "${GIT_STATE_FILE}")
+  file(READ "${GIT_STATE_FILE}" PREVIOUS_GIT_HASH)
+  string(STRIP "${PREVIOUS_GIT_HASH}" PREVIOUS_GIT_HASH)
+  if(NOT PREVIOUS_GIT_HASH STREQUAL CURRENT_GIT_HASH)
+    set(SHOULD_WRITE TRUE)
+  endif()
+endif()
+
+if(SHOULD_WRITE)
+  set(GIT_HASH "${CURRENT_GIT_HASH}")
+  message(STATUS "Writing git hash ${GIT_HASH} to ${GIT_OUTPUT}")
+  configure_file("${GIT_TEMPLATE}" "${GIT_OUTPUT}" @ONLY)
+  file(WRITE "${GIT_STATE_FILE}" "${GIT_HASH}")
+else()
+  message(STATUS "Git hash unchanged (${CURRENT_GIT_HASH})")
+endif()

@@ -1,6 +1,7 @@
 #include "defs.h"
 #include "debug.h"
 #include "version.h"
+#include "git_version.h"
 
 #include "dfsan/dfsan.h"
 
@@ -879,6 +880,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
   spdlog::cfg::load_env_levels();
+  spdlog::info("RLDriver build with git hash: {}", kGitHash);
   RLDriver driver(cfg);
   driver.Serve();
   return 0;
