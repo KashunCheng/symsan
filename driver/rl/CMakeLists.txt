@@ -28,6 +28,24 @@ set(RL_PROTO_HDRS
     ${GENERATED_DIR}/rl.grpc.pb.h
 )
 
+set(GIT_VERSION_TEMPLATE ${CMAKE_CURRENT_SOURCE_DIR}/git_version.cpp.in)
+set(GIT_VERSION_OUTPUT ${GENERATED_DIR}/git_version.cpp)
+set(GIT_VERSION_STATE ${GENERATED_DIR}/git-state.txt)
+set(GIT_VERSION_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/UpdateGitVersion.cmake)
+
+add_custom_target(update_git_version_rl
+  COMMAND ${CMAKE_COMMAND}
+    -DGIT_TEMPLATE:PATH=${GIT_VERSION_TEMPLATE}
+    -DGIT_OUTPUT:PATH=${GIT_VERSION_OUTPUT}
+    -DGIT_STATE_FILE:PATH=${GIT_VERSION_STATE}
+    -DSOURCE_DIR:PATH=${CMAKE_SOURCE_DIR}
+    -P ${GIT_VERSION_SCRIPT}
+  COMMENT "Updating git hash for RLDriver"
+  VERBATIM
+)
+
+set_source_files_properties(${GIT_VERSION_OUTPUT} PROPERTIES GENERATED TRUE)
+
 add_custom_command(
     OUTPUT ${RL_PROTO_SRCS} ${RL_PROTO_HDRS}
     COMMAND ${Protobuf_PROTOC_EXECUTABLE}
@@ -47,6 +65,7 @@ add_executable(RLDriver main.cpp ${RL_PROTO_SRCS})
 target_include_directories(RLDriver PUBLIC
     ${CMAKE_SOURCE_DIR}/runtime
     ${GENERATED_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(RLDriver PRIVATE
   launcher
@@ -57,5 +76,7 @@ target_link_libraries(RLDriver PRIVATE
   spdlog::spdlog
   rt
 )
+add_dependencies(RLDriver update_git_version_rl)
+target_sources(RLDriver PRIVATE ${GIT_VERSION_OUTPUT})
 
 install(TARGETS RLDriver DESTINATION ${SYMSAN_BIN_DIR})

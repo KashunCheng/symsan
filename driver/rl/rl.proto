@@ -2,6 +2,13 @@ syntax = "proto3";
 
 package rl;
 
+enum BranchTraceType {
+  BRANCH_TRACE_NOT_REACHED = 0;
+  BRANCH_TRACE_TAKEN = 1;
+  BRANCH_TRACE_NOT_TAKEN = 2;
+  BRANCH_TRACE_TAKEN_AND_NOT_TAKEN = 3;
+}
+
 message TraceRequest {
   uint64 line_to_reach = 1;
   map<uint64, bool> branch_traces = 2;
@@ -14,8 +21,8 @@ message TraceResponse {
     bool sat = 2;
     bool timeout = 3;
   }
-  map<uint64, bool> symbolic_branch_trace = 4;
-  map<uint64, bool> non_symbolic_branch_trace = 5;
+  map<uint64, BranchTraceType> symbolic_branch_trace = 4;
+  map<uint64, BranchTraceType> non_symbolic_branch_trace = 5;
 }
 
 message ReadLinesRequest {}
