@@ -1,6 +1,6 @@
 pushd example_rl/complex
-
-SPDLOG_LEVEL=trace /workspaces/symsan/build/bin/RLDriver \
+./build.sh
+SPDLOG_LEVEL=trace /../../build/bin/RLDriver \
     --config rl.conf 
 
 popd

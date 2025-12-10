@@ -17,6 +17,16 @@ import rl_client  # 就是你贴的那个文件，文件名为 rl_client.py
 # 你关心的源码行号（就是之前你手动执行 --line 50 / 54 / 61 / 72）
 TARGET_LINES: List[int] = [50, 54, 61, 72]
 
+# 分支方向配置：源码行号 -> 分支方向 (True/False)
+# 用源码行号来指定，代码会自动转换成对应的 line_id
+# 如果某个分支行号没有在这里指定，默认为 True
+BRANCH_DIRECTIONS_BY_LINE: Dict[int, bool] = {
+    50: True,   # 第50行的分支方向
+    54: True,   # 第54行的分支方向  
+    61: False,  # 第61行的分支方向
+    # 72 是 line_to_reach (is_if=False)，不需要设置方向
+}
+
 # gRPC endpoint
 ENDPOINT = "127.0.0.1:50051"
 
@@ -59,20 +69,32 @@ def collect_nodes_for_lines(
 
 
 def build_trace_args(
-    nodes: List[Tuple[int, object]]
+    nodes: List[Tuple[int, object]],
+    branch_directions: Dict[int, bool] = None
 ) -> Tuple[int, List[Tuple[int, bool]]]:
     """
     根据 nodes 构造：
       - line_to_reach: is_if == False 的那个 line_id
-      - branches: [(line_id, bool), ...]  包含 true 和 false 全部
+      - branches: [(line_id, direction), ...]  只包含 is_if == True 的节点
+      
+    branch_directions: 可选的字典，指定每个 line_id 的分支方向（true/false）
+                      如果未提供，默认使用 True
     """
     branches: List[Tuple[int, bool]] = []
     line_to_reach: int | None = None
 
+    if branch_directions is None:
+        branch_directions = {}
+
     for lid, info in nodes:
         is_if = bool(info.is_if)
-        branches.append((lid, is_if))
-        if not is_if:
+        if is_if:
+            # 这是一个分支节点，需要设置方向
+            # 如果没有指定方向，默认为 True
+            direction = branch_directions.get(lid, True)
+            branches.append((lid, direction))
+        else:
+            # 这是目标行 line_to_reach
             if line_to_reach is None:
                 line_to_reach = lid
             else:
@@ -136,20 +158,33 @@ def main():
 
     # 构建 line_id -> 源码行号 的映射
     id_to_line: Dict[int, int] = {lid: info.line for lid, info in nodes}
+    # 构建 源码行号 -> line_id 的映射
+    line_to_id: Dict[int, int] = {info.line: lid for lid, info in nodes}
 
     for lid, info in nodes:
         print(
             f"[NODE] line_id={lid}, file={info.file}, line={info.line}, is_if={info.is_if}"
         )
 
-    line_to_reach, branches = build_trace_args(nodes)
+    # 将源码行号的分支方向配置转换为 line_id 的分支方向
+    branch_directions: Dict[int, bool] = {}
+    for src_line, direction in BRANCH_DIRECTIONS_BY_LINE.items():
+        if src_line in line_to_id:
+            branch_directions[line_to_id[src_line]] = direction
+            print(f"[BRANCH] line {src_line} (id={line_to_id[src_line]}) -> {direction}")
+
+    line_to_reach, branches = build_trace_args(nodes, branch_directions)
 
     print(f"[INFO] line_to_reach = {line_to_reach}")
     print(f"[INFO] branches = {branches}")
+    
+    # 打印可以直接执行的命令
+    branch_args = " ".join([f"--branch {lid}:{str(val).lower()}" for lid, val in branches])
+    print(f"\n[CMD] python rl_client.py --endpoint {ENDPOINT} trace --line-to-reach {line_to_reach} {branch_args}")
 
     run_trace(stub, rl_pb2, line_to_reach, branches, id_to_line)
 
 
 if __name__ == "__main__":
-    os.system("cd complex && bash ./build.sh && cd .. && cd dummy &&  bash ./build.sh && cd ..")
+    #os.system("cd complex && bash ./build.sh && cd .. && cd dummy &&  bash ./build.sh && cd ..")
     main()
