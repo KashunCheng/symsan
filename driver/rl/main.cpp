@@ -41,6 +41,10 @@ extern "C" {
 #include <vector>
 #include <dirent.h>
 #include <limits.h>
+#include <experimental/optional>
+
+using std::experimental::optional;
+using std::experimental::nullopt;
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -128,8 +132,8 @@ private:
                          std::unordered_map<uint64_t, bool> &sym,
                          std::unordered_map<uint64_t, bool> &non_sym,
                          const std::unordered_map<uint64_t, BranchInfo> &source);
-  bool solve_for_trace(const std::unordered_map<uint64_t, bool> &branch_trace,
-                       RunResult &base_run);
+  optional<RunResult> solve_for_trace(const std::unordered_map<uint64_t, bool> &branch_trace,
+                                      const std::vector<uint8_t> &buf);
 
   Config cfg_;
   z3::context z3_ctx_;
@@ -493,7 +497,7 @@ bool RLDriver::run_once(const std::string &input_path, bool report_all,
         st == symsan::Z3ParserSolver::opt_sat_nested_timeout ||
         st == symsan::Z3ParserSolver::opt_sat_nested_unsat) {
       if (!solutions.empty()) {
-        std::vector<uint8_t> new_buf = res.input_bytes; //TODO: Do you think we need to resize new_buf to max(all(offset), input_bytes) first? So we don't need to check offset in the inner loop?
+        std::vector<uint8_t> new_buf = res.input_bytes;
         for (auto const &sol : solutions) {
           if (sol.offset < new_buf.size()) {
             new_buf[sol.offset] = sol.val;
@@ -603,10 +607,10 @@ bool RLDriver::build_branch_maps(
   return true;
 }
 
-bool RLDriver::solve_for_trace(
-    const std::unordered_map<uint64_t, bool> &branch_trace, RunResult &base_run) {
+optional<RunResult> RLDriver::solve_for_trace(const std::unordered_map<uint64_t, bool> &branch_trace,
+                                              const std::vector<uint8_t> &input_bytes) {
   std::vector<symsan::input_t> inputs;
-  inputs.push_back({base_run.input_bytes.data(), base_run.input_bytes.size()});
+  inputs.push_back({input_bytes.data(), input_bytes.size()});
   parser_->restart(inputs);
   // capture cond metadata for symbolic branches once so we can reuse below
   std::unordered_map<uint64_t, CondEntry> symbolic_meta;
@@ -615,20 +619,20 @@ bool RLDriver::solve_for_trace(
     auto bit = branches_.find(kv.first);
     if (bit == branches_.end()) {
       spdlog::warn("Requested branch {} not observed yet", kv.first);
-      return false;
+      return nullopt;
     }
     if (!bit->second.symbolic)
       continue;
     auto cid_it = line_to_cid_.find(kv.first);
     if (cid_it == line_to_cid_.end()) {
       spdlog::warn("Missing cid for symbolic branch {}", kv.first);
-      return false;
+      return nullopt;
     }
     auto c_it = conds_.find(cid_it->second);
     if (c_it == conds_.end()) {
       spdlog::warn("Missing cond entry for cid {} (branch {})", cid_it->second,
                    kv.first);
-      return false;
+      return nullopt;
     }
     parser_->add_constraints_as_task(c_it->second.label, kv.second ? 1 : 0, task_id); //TODO: we do not use kv.second. kv.second means if we want to take it or not on the ast side. However, here we need the direction on the llvm ir side.
     symbolic_meta.emplace(kv.first, c_it->second);
@@ -636,7 +640,7 @@ bool RLDriver::solve_for_trace(
                   kv.second);
   }
 
-  std::vector<uint8_t> buf = base_run.input_bytes;
+  std::vector<uint8_t> buf = input_bytes;
   std::vector<uint64_t> solve_tasks;
 
   symsan::Z3ParserSolver::solution_t solutions;
@@ -645,7 +649,7 @@ bool RLDriver::solve_for_trace(
       st != symsan::Z3ParserSolver::nested_sat &&
       st != symsan::Z3ParserSolver::opt_sat_nested_timeout &&
       st != symsan::Z3ParserSolver::opt_sat_nested_unsat) {
-    return false;
+    return nullopt;
   }
   for (auto const &sol : solutions) {
     if (sol.offset < buf.size()) {
@@ -655,11 +659,11 @@ bool RLDriver::solve_for_trace(
 
   std::string new_input = materialize_input(buf);
   if (new_input.empty())
-    return false;
+    return nullopt;
 
   RunResult verify;
   if (!run_once(new_input, true, verify))
-    return false;
+    return nullopt;
 
   // verify requested branch directions are satisfied
   for (auto const &kv : branch_trace) {
@@ -673,12 +677,11 @@ bool RLDriver::solve_for_trace(
                     (it == verify.branches.end() || !it->second.seen)
                         ? ""
                         : (it->second.last_result ? "true" : "false"));
-      return false;
+      return nullopt;
     }
   }
 
-  base_run = verify;
-  return true;
+  return verify;
 }
 
 Status RLDriver::HandleTrace(const rl::TraceRequest &req,
@@ -698,12 +701,6 @@ Status RLDriver::HandleTrace(const rl::TraceRequest &req,
 
   RunResult last_run;
   bool covered = explore_until_covered(branch_trace, last_run);
-  if (last_run.input_bytes.empty()) {
-    // If we didn't execute during this request (coverage already known),
-    // refresh parser state with last input to keep caches valid.
-    std::string refresh_path = last_input_path_.empty() ? cfg_.input_path : last_input_path_;
-    run_once(refresh_path, true, last_run);
-  }
 
   std::unordered_map<uint64_t, bool> sym_map;
   std::unordered_map<uint64_t, bool> non_sym_map;
@@ -711,21 +708,23 @@ Status RLDriver::HandleTrace(const rl::TraceRequest &req,
   bool sat = true;
   bool timeout = false;
 
-  bool have_run = run_has_branches(last_run, branch_trace); //TODO: this to do it for the person review, don't remove (is it necessary to keep run_has_branches)
-  if (!have_run && !branch_trace.empty()) {
-    have_run = ensure_run_has_branches(branch_trace, last_run);
-  }
-
-  if (!covered || (!branch_trace.empty() && !have_run)) {
-    if (!have_run && !branch_trace.empty()) {
-      spdlog::warn("Unable to replay any input covering requested branches");
-    }
+  if (!covered) {
+    spdlog::warn("Unable to reach some if branches.");
     timeout = true;
     sat = false;
   } else {
-    if (!branch_trace.empty() &&
-        !solve_for_trace(branch_trace, last_run)) {
-      sat = false;
+    if (!branch_trace.empty()) {
+      std::vector<uint8_t> buf;
+      std::ifstream file(cfg_.input_path, std::ios::binary | std::ios::ate);
+      auto size = file.tellg();
+      file.seekg(0, std::ios::beg);
+      std::vector<uint8_t> buffer(static_cast<size_t>(size));
+      file.read((char*)(buffer.data()), size);
+      if(auto trace_run = solve_for_trace(branch_trace, buffer)){
+        last_run = *trace_run;
+      }else{
+        sat = false;
+      }
     }
 
     // rebuild maps after solving/verification run

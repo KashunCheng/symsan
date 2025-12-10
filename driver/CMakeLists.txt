@@ -1,5 +1,5 @@
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 
 ## launcher lib
 add_subdirectory(launcher)
